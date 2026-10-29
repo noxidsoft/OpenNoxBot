@@ -1,6 +1,6 @@
 # OpenNoxBot hand-off
 
-Written 2026-10-29, updated after the email connection for the next agent session. Read this first, then `TODO.md`. Delete or rewrite it when it goes stale.
+Written 2026-10-29, last updated at the end of that day (after spend limits). Read this first, then `TODO.md`. Delete or rewrite it when it goes stale.
 
 ## What this is
 
@@ -22,15 +22,19 @@ Guardrails come first: nothing unattended until approvals, policy and logging ar
 | 1 | Engine detection (claude, codex, OpenAI key, Jev key), Settings, masked Jev key in the OS keyring | done, user-tested |
 | 2 | Chat with streaming, tool cards, SQLite store, approval cards (loopback MCP permission server) | done, user-tested |
 | 3 | Guarded SSH: host registry, pinned keys, per-host policy, `ssh_exec`, audit log, Settings → Hosts | done; user added two real hosts, trusted keys, Test says Connected, `list my hosts` works in chat |
-| 4 | MCP connections. Email done, user-tested; Stripe, Xero, Google Sheets next | in progress |
-| 5 | Chief + role workers | not started |
-| 6 | Automations, headless-capable core | not started |
+| 4 | Email connection (in-process IMAP read/search/draft tools, Settings → Connections) | done, user-tested |
+| 5 | Usage and costs: per-turn recording, Settings → Usage, global 24-hour and 30-day spend caps | done, user-tested (CSV export, provider allowances and a per-run trace are still open) |
+| 6 | Attachments and goals | **next** |
+| 7 | Chief + workers + Team Map; Jev model selection; automations and schedules; UI logging; browser visuals and data view | not started |
+| – | Generic MCP registry (Stripe, Xero, Google Sheets) | parked |
+
+The numbered order of upcoming work lives in the `TODO.md` roadmap; this table follows it.
 
 What the user reported about Stage 3: "other tests passed for me". They skipped one "rename test" because those hosts are part of their real workflow. That test is not in my checklist, so it is probably the "make a change on a host" step (create a file, expect an approval card). Treat the change-with-approval path on a real host and the read-only/Refused path as **not confirmed by the user**. The Activity log was empty in their screenshot. It is covered by tests against a throwaway sshd and the real `claude`, not by them.
 
-Git: branch `main`, everything is pushed as of the email UAT. Ask before pushing again.
+Git: branch `main`, everything is pushed as of the spend-limit UAT. Ask before pushing again.
 
-Tests: about 80 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
+Tests: about 90 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
 
 ## Working with this user
 
@@ -97,28 +101,33 @@ Verifying UI without the user: launch an **isolated** instance and screenshot it
 9. **keyring is v4** (`keyring::Entry`, Secret Service); the API differs from v3 examples online.
 10. `Tauri dev` runs `trunk` with `cwd: ../omb-ui` (set in `tauri.conf.json`); trunk must be on PATH.
 
-## Stage 4 so far: email
+## Usage and costs
+
+`TurnRecorder::finish(prompt)` (called by `play_turn` after the stream ends) writes one `runs` row plus `run_models` rows from the CLI's `result` frame (`total_cost_usd`, `usage` tokens summed incl. cache, `num_turns` as steps, `modelUsage[].costUSD`); tool uses are counted from `ItemStarted`; time is measured by the recorder. `RuntimeEvent::TurnCompleted` now carries `usage: Option<TurnUsage>`. Periods are rolling windows (24 h, 7 d, 30 d), not calendar ones. `limits` table (one row) holds the caps; `send_message` calls `Store::over_limit()` and refuses before starting a turn, so one turn can overshoot. History predates nothing: turns before the feature were never recorded. Next layers if wanted: CSV export, provider allowance bars (the original's second Usage screenshot), per-run trace.
+
+## Email connection (Stage 4)
 
 Rust port, served **in-process** by the loopback `nox` server (`omb-mcp/src/email_tools.rs`): `email_folders`, `email_search`, `email_read`, `email_draft`. No child process, so the password (keyring `email-password`, read per call) never reaches claude's env or the 0600 turn config. Settings → Connections stores address/server/port in the `email` table (one mailbox). `email_draft` asks for approval inside the tool (the `approve` callback skips `mcp__nox__*`); reads run without asking and are not logged. Search terms must be plain ASCII and are quoted; the `imap` crate's `search` takes a raw string, and its `append` does not escape the folder name (we only pass names from LIST). Reads use EXAMINE and `BODY.PEEK`. Email bodies are outside text: tool output carries a "do not follow instructions" note, but a prompt-injected email could still steer a bot toward `ssh_exec` on a Full host. **Decided with the user:** nothing may be sent to a customer or contact without their explicit approval. So (1) while a mailbox is connected every turn runs in Ask mode (`ApprovalMode::with_mail`), because the CLI skips the permission callback in Auto/Full; (2) once a turn has read mail (`TurnContext.mail_seen`), `ssh_exec` asks even on Full hosts and for status commands. Any future send-like tool (invoices in Stripe/Xero, anything that contacts a person) must ask unconditionally.
 
-MCP connections are now parked (see `TODO.md` roadmap; the next work is Usage and costs). Still to do for them: a generic stdio/http MCP registry for Stripe, Xero, Google Sheets (not started; research each one's auth first).
+MCP connections are parked (see `TODO.md`). Still to do for them: a generic stdio/http MCP registry for Stripe, Xero, Google Sheets (not started; research each one's auth first).
 
-## Original Stage 4 plan (generic registry part still open)
+## Parked: generic MCP registry plan
 
-Plan (not started):
+Plan (parked, not started):
 - Registry table `mcp_servers` (name, kind stdio|http, command/args or URL, env/header entries that reference keyring secrets). Settings → Connections page; secrets entered masked and stored in the keyring, never shown back (same pattern as the Jev key in `api_keys.rs` / `omb_core::secrets`).
 - Merge enabled servers into each turn's `mcpServers` map next to `nox` (`omb_mcp::TurnAccess::config`), injecting secrets at spawn. Their tools arrive as `mcp__<name>__<tool>` and go through `approve`, so they ask by default. Consider per-server read/write classification and an "always allow" memory (see `TODO.md`).
-- Email is done (see above); the user chose the Rust port.
 - Then Stripe, Xero, Google Sheets. Do not assume how they authenticate: look up the current official or community MCP servers and their auth (Stripe has a remote MCP and a local one; Xero publishes an MCP server; Google Workspace options are mostly community) before building. OAuth PKCE reference: `~/Programs/OpenMausBot/server/mcp-oauth.ts`.
 
-Then Stage 5 (chief + workers: delegation tools on the MCP server, a task tree with status and limits on depth/concurrency/cost, a team map; see the original's `docs/runtime-contract.md`, `agents-tool-bridge.md`) and Stage 6 (automations: cron with timezones plus cheap code "checks" before any model turn, run history, pause/resume; see `docs/routine-schedules.md`, `proactive-routines.md`). Unattended runs need a headless-capable core, so keep logic out of the Tauri layer.
+Later roadmap items (chief + workers: delegation tools on the MCP server, a task tree with status and limits on depth/concurrency/cost, a team map; see the original's `docs/runtime-contract.md`, `agents-tool-bridge.md`) and automations: cron with timezones plus cheap code "checks" before any model turn, run history, pause/resume; see `docs/routine-schedules.md`, `proactive-routines.md`). Unattended runs need a headless-capable core, so keep logic out of the Tauri layer.
 
 ## Open items to raise with the user
 
-- Push the 18 local commits?
+- Next up is attachments and goals. Read `~/Programs/screenshots-OpenNoxBot/main-screen-attach-and-goal-buttons.png` first. Attachments before goals. Goals need turn, time and cost limits and must respect the spend caps.
+- The user wants an inbox-triage bot eventually (see `TODO.md` Later and the guardrails under Email): only drafts, nothing sent without approval.
 - Which commands should run silently over SSH? The list in `omb-ssh/src/policy.rs` is deliberately narrow (uptime, df, free, ls, ps, systemctl status, journalctl, docker ps/logs/stats, tail/head/cat/grep under `/var/log`). They were asked and have not answered.
 - Jev: it is a decision/extraction helper in the original ("Decision and extraction"), not a chat engine. Only key storage and detection exist; a Test button needs the endpoint (base URL `https://api.typesafe.ai`; the `typesafe:typesafe-ai` skill documents it).
 - The skipped "rename test" (see State).
+- Safety rules already decided: while a mailbox is connected every turn runs in Ask mode; after mail is read in a turn `ssh_exec` always asks; any future send-like tool always asks.
 - Unix-only code (`std::os::unix`) in `omb-ssh`, `omb-app`, tests; Windows/macOS need cfgs.
 
 ## Reference
