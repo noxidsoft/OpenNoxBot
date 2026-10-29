@@ -1,4 +1,4 @@
-use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, MessageRole, ToolCall};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, HostPolicy, MessageRole, NewHost, SshHost, SshLogEntry, SshOutcome, ToolCall};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -26,6 +26,23 @@ fn bot_of(row: &Row) -> rusqlite::Result<Bot> {
 
 fn message_of(row: &Row) -> rusqlite::Result<ChatMessage> {
     Ok(ChatMessage { id: row.get(0)?, bot_id: row.get(1)?, role: value_of(row.get(2)?)?, body: row.get(3)? })
+}
+
+fn host_of(row: &Row) -> rusqlite::Result<SshHost> {
+    Ok(SshHost { id: row.get(0)?, name: row.get(1)?, target: row.get(2)?, user: row.get(3)?, port: row.get(4)?, policy: value_of(row.get(5)?)? })
+}
+
+fn log_of(row: &Row) -> rusqlite::Result<SshLogEntry> {
+    Ok(SshLogEntry {
+        id: row.get(0)?,
+        at: row.get(1)?,
+        bot_id: row.get(2)?,
+        host: row.get(3)?,
+        command: row.get(4)?,
+        outcome: value_of(row.get(5)?)?,
+        exit_code: row.get(6)?,
+        millis: row.get(7)?,
+    })
 }
 
 fn failed(error: rusqlite::Error) -> String {
@@ -58,7 +75,25 @@ impl Store {
                  role TEXT NOT NULL,
                  body TEXT NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS messages_by_bot ON messages(bot_id, id);",
+             CREATE INDEX IF NOT EXISTS messages_by_bot ON messages(bot_id, id);
+             CREATE TABLE IF NOT EXISTS hosts (
+                 id INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE,
+                 target TEXT NOT NULL,
+                 user TEXT,
+                 port INTEGER,
+                 policy TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ssh_log (
+                 id INTEGER PRIMARY KEY,
+                 at INTEGER NOT NULL,
+                 bot_id INTEGER,
+                 host TEXT NOT NULL,
+                 command TEXT NOT NULL,
+                 outcome TEXT NOT NULL,
+                 exit_code INTEGER,
+                 millis INTEGER
+             );",
         )
         .map_err(failed)?;
         Ok(Self { conn: Mutex::new(conn) })
@@ -163,6 +198,62 @@ impl Store {
         Ok(())
     }
 
+    pub fn add_host(&self, host: &NewHost) -> Result<SshHost, String> {
+        host.validate()?;
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO hosts (name, target, user, port, policy) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![host.name, host.target, host.user, host.port, text_of(host.policy)],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::ConstraintViolation => "A host with that name already exists".to_owned(),
+            other => failed(other),
+        })?;
+        Ok(SshHost { id: conn.last_insert_rowid(), name: host.name.clone(), target: host.target.clone(), user: host.user.clone(), port: host.port, policy: host.policy })
+    }
+
+    pub fn hosts(&self) -> Result<Vec<SshHost>, String> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT id, name, target, user, port, policy FROM hosts ORDER BY name").map_err(failed)?;
+        statement.query_map([], host_of).map_err(failed)?.collect::<Result<_, _>>().map_err(failed)
+    }
+
+    pub fn host_by_name(&self, name: &str) -> Result<Option<SshHost>, String> {
+        self.conn().query_row("SELECT id, name, target, user, port, policy FROM hosts WHERE name = ?1", [name], host_of).optional().map_err(failed)
+    }
+
+    pub fn host(&self, id: i64) -> Result<Option<SshHost>, String> {
+        self.conn().query_row("SELECT id, name, target, user, port, policy FROM hosts WHERE id = ?1", [id], host_of).optional().map_err(failed)
+    }
+
+    pub fn remove_host(&self, id: i64) -> Result<(), String> {
+        self.conn().execute("DELETE FROM hosts WHERE id = ?1", [id]).map(|_| ()).map_err(failed)
+    }
+
+    pub fn set_host_policy(&self, id: i64, policy: HostPolicy) -> Result<(), String> {
+        self.conn().execute("UPDATE hosts SET policy = ?2 WHERE id = ?1", params![id, text_of(policy)]).map(|_| ()).map_err(failed)
+    }
+
+    pub fn log_ssh(&self, bot_id: Option<i64>, host: &str, command: &str, outcome: SshOutcome, exit_code: Option<i32>, millis: Option<i64>) -> Result<(), String> {
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
+        self.conn()
+            .execute(
+                "INSERT INTO ssh_log (at, bot_id, host, command, outcome, exit_code, millis) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![at, bot_id, host, command, text_of(outcome), exit_code, millis],
+            )
+            .map(|_| ())
+            .map_err(failed)
+    }
+
+    /// Newest first.
+    pub fn ssh_log(&self, limit: u32) -> Result<Vec<SshLogEntry>, String> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare("SELECT id, at, bot_id, host, command, outcome, exit_code, millis FROM ssh_log ORDER BY id DESC LIMIT ?1")
+            .map_err(failed)?;
+        statement.query_map([limit], log_of).map_err(failed)?.collect::<Result<_, _>>().map_err(failed)
+    }
+
     pub fn messages(&self, bot_id: i64) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn();
         let mut statement = conn.prepare("SELECT id, bot_id, role, body FROM messages WHERE bot_id = ?1 ORDER BY id").map_err(failed)?;
@@ -227,6 +318,32 @@ mod tests {
         store.expire_unfinished(None, Some("The app closed before this turn finished")).unwrap();
         assert_eq!(of(&b).last().map(|m| (m.role, m.body.as_str())), Some((MessageRole::Error, "The app closed before this turn finished")));
         assert_eq!(of(&a).len(), 3, "a was already closed out, so it gets no note");
+    }
+
+    #[test]
+    fn hosts_are_validated_unique_and_updatable() {
+        let store = Store::in_memory().unwrap();
+        let new = |name: &str| NewHost { name: name.into(), target: "10.0.0.5".into(), user: Some("deploy".into()), port: Some(2222), policy: HostPolicy::Ask };
+        let web = store.add_host(&new("web")).unwrap();
+        store.add_host(&new("db")).unwrap();
+        assert_eq!(store.add_host(&new("web")), Err("A host with that name already exists".into()));
+        assert!(store.add_host(&NewHost { target: "-oProxyCommand=x".into(), ..new("bad") }).is_err());
+        assert_eq!(store.hosts().unwrap().iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["db", "web"]);
+        store.set_host_policy(web.id, HostPolicy::ReadOnly).unwrap();
+        assert_eq!(store.host_by_name("web").unwrap().unwrap().policy, HostPolicy::ReadOnly);
+        assert_eq!(store.host(web.id).unwrap().unwrap().port, Some(2222));
+        store.remove_host(web.id).unwrap();
+        assert_eq!(store.host_by_name("web").unwrap(), None);
+    }
+
+    #[test]
+    fn the_ssh_log_lists_newest_first() {
+        let store = Store::in_memory().unwrap();
+        store.log_ssh(Some(1), "web", "uptime", SshOutcome::Ran, Some(0), Some(120)).unwrap();
+        store.log_ssh(Some(1), "web", "rm -rf /", SshOutcome::Declined, None, None).unwrap();
+        let log = store.ssh_log(10).unwrap();
+        assert_eq!(log.iter().map(|e| (e.command.as_str(), e.outcome)).collect::<Vec<_>>(), [("rm -rf /", SshOutcome::Declined), ("uptime", SshOutcome::Ran)]);
+        assert_eq!(store.ssh_log(1).unwrap().len(), 1);
     }
 
     #[test]
