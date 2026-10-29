@@ -2,6 +2,7 @@ mod api;
 mod api_keys;
 mod chat;
 mod engines;
+mod hosts;
 mod settings;
 
 use chat::Chat;

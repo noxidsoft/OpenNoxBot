@@ -1,11 +1,13 @@
 use crate::api_keys::ApiKeys;
 use crate::engines::Engines;
+use crate::hosts::Hosts;
 use leptos::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Engines,
     ApiKeys,
+    Hosts,
 }
 
 #[component]
@@ -29,11 +31,13 @@ pub fn Settings(#[prop(into)] close: Callback<()>) -> impl IntoView {
                 <button class="back" on:click=move |_| close.run(())>"← Back"</button>
                 <h2>"Settings"</h2>
                 {item(Page::Engines, "Engines")}
+                {item(Page::Hosts, "Hosts")}
                 {item(Page::ApiKeys, "API keys")}
             </nav>
             <main>
                 {move || match page.get() {
                     Page::Engines => view! { <Engines /> }.into_any(),
+                    Page::Hosts => view! { <Hosts /> }.into_any(),
                     Page::ApiKeys => view! { <ApiKeys /> }.into_any(),
                 }}
             </main>

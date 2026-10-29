@@ -3114,6 +3114,7 @@ dependencies = [
  "omb-core",
  "omb-drivers",
  "omb-mcp",
+ "omb-ssh",
  "omb-wire",
  "serde_json",
  "tauri",

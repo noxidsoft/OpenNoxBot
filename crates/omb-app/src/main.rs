@@ -23,8 +23,12 @@ fn main() {
             let store = Arc::new(omb_core::store::Store::open(&data.join("opennoxbot.db"))?);
             store.expire_unfinished(None, Some("The app closed before this turn finished"))?;
             let approvals = Arc::new(omb_core::approvals::Approvals::default());
-            let mcp = Arc::new(tauri::async_runtime::block_on(omb_mcp::McpServer::start(approvals.clone()))?);
-            app.manage(AppState { store, data, running: Mutex::new(HashSet::new()), approvals, mcp });
+            let control = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let owner = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&data)?);
+            let ssh = Arc::new(omb_ssh::SshRunner::new(data.join("known_hosts"), control.join(format!("nox-ssh-{owner}"))));
+            let services = omb_mcp::Services { approvals: approvals.clone(), store: store.clone(), ssh: ssh.clone() };
+            let mcp = Arc::new(tauri::async_runtime::block_on(omb_mcp::McpServer::start(services))?);
+            app.manage(AppState { store, data, running: Mutex::new(HashSet::new()), approvals, mcp, ssh, scanned: Mutex::new(Default::default()) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +45,14 @@ fn main() {
             commands::running_bots,
             commands::send_message,
             commands::answer_request,
+            commands::list_hosts,
+            commands::add_host,
+            commands::set_host_policy,
+            commands::remove_host,
+            commands::scan_host,
+            commands::trust_host,
+            commands::test_host,
+            commands::ssh_activity,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenNoxBot");

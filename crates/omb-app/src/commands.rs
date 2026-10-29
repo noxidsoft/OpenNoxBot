@@ -4,8 +4,9 @@ use omb_core::recorder::TurnRecorder;
 use omb_core::secrets::{self, Secret};
 use omb_core::store::Store;
 use omb_drivers::{Host, McpAccess, Turn, run_turn};
-use omb_mcp::{McpServer, PERMISSION_TOOL, TurnContext};
-use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, EngineId, EngineStatus, MessageRole, RuntimeEvent};
+use omb_mcp::{DISALLOWED_TOOLS, McpServer, PERMISSION_TOOL, TurnContext};
+use omb_ssh::{ScannedKey, SshRunner};
+use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, EngineId, EngineStatus, HostPolicy, HostStatus, MessageRole, NewHost, RuntimeEvent, SshHost, SshLogEntry};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,8 @@ pub struct AppState {
     pub running: Mutex<HashSet<i64>>,
     pub approvals: Arc<Approvals>,
     pub mcp: Arc<McpServer>,
+    pub ssh: Arc<SshRunner>,
+    pub scanned: Mutex<std::collections::HashMap<i64, Vec<ScannedKey>>>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -149,7 +152,7 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: 
     let (model, approval, prompt, config_path) = (bot.model.clone(), bot.approval, text.to_owned(), config.clone());
     let driver = tokio::spawn(async move {
         let _access = access;
-        let mcp = McpAccess { config: &config_path, permission_tool: PERMISSION_TOOL };
+        let mcp = McpAccess { config: &config_path, permission_tool: PERMISSION_TOOL, disallowed_tools: &DISALLOWED_TOOLS };
         let turn = Turn { prompt: &prompt, model: model.as_deref(), approval, resume: resume.as_deref(), cwd: &cwd, mcp: Some(mcp) };
         run_turn(&bin, &host, &turn, &tx).await
     });
@@ -184,4 +187,69 @@ fn write_turn_config(data: &std::path::Path, config: &serde_json::Value) -> std:
 pub fn answer_request(state: State<'_, AppState>, request_id: String, allow: bool) -> Result<(), String> {
     let decision = if allow { Decision::Allow } else { Decision::Deny };
     if state.approvals.answer(&request_id, decision) { Ok(()) } else { Err("This request is no longer waiting".into()) }
+}
+
+#[tauri::command]
+pub async fn list_hosts(state: State<'_, AppState>) -> Result<Vec<HostStatus>, String> {
+    let mut statuses = Vec::new();
+    for host in state.store.hosts()? {
+        let trusted = state.ssh.is_trusted(&host).await;
+        statuses.push(HostStatus { host, trusted });
+    }
+    Ok(statuses)
+}
+
+#[tauri::command]
+pub fn add_host(state: State<'_, AppState>, host: NewHost) -> Result<SshHost, String> {
+    state.store.add_host(&host)
+}
+
+#[tauri::command]
+pub async fn set_host_policy(state: State<'_, AppState>, host_id: i64, policy: HostPolicy) -> Result<(), String> {
+    state.store.set_host_policy(host_id, policy)?;
+    if let Some(host) = state.store.host(host_id)? {
+        state.ssh.disconnect(&host).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_host(state: State<'_, AppState>, host_id: i64) -> Result<(), String> {
+    if let Some(host) = state.store.host(host_id)? {
+        state.ssh.disconnect(&host).await;
+    }
+    state.store.remove_host(host_id)
+}
+
+/// Fetches the host's keys and keeps them until the person confirms the fingerprints they were shown.
+#[tauri::command]
+pub async fn scan_host(state: State<'_, AppState>, host_id: i64) -> Result<Vec<String>, String> {
+    let host = state.store.host(host_id)?.ok_or("This host no longer exists")?;
+    let keys = state.ssh.scan(&host).await?;
+    let fingerprints = keys.iter().map(|key| key.fingerprint.clone()).collect();
+    state.scanned.lock().map_err(|e| e.to_string())?.insert(host_id, keys);
+    Ok(fingerprints)
+}
+
+#[tauri::command]
+pub fn trust_host(state: State<'_, AppState>, host_id: i64) -> Result<(), String> {
+    let keys = state.scanned.lock().map_err(|e| e.to_string())?.remove(&host_id).ok_or("Scan the host first")?;
+    state.ssh.pin(&keys)
+}
+
+#[tauri::command]
+pub async fn test_host(state: State<'_, AppState>, host_id: i64) -> Result<String, String> {
+    let host = state.store.host(host_id)?.ok_or("This host no longer exists")?;
+    let done = state.ssh.exec(&host, "true", std::time::Duration::from_secs(15)).await;
+    match (done.error, done.timed_out, done.exit_code) {
+        (Some(error), _, _) => Err(error),
+        (_, true, _) => Err("Timed out".into()),
+        (_, _, Some(0)) => Ok("Connected".into()),
+        _ => Err(done.stderr.trim().lines().last().unwrap_or("Could not connect").to_owned()),
+    }
+}
+
+#[tauri::command]
+pub fn ssh_activity(state: State<'_, AppState>, limit: u32) -> Result<Vec<SshLogEntry>, String> {
+    state.store.ssh_log(limit.min(200))
 }

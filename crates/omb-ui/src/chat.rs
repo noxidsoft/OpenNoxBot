@@ -63,6 +63,9 @@ fn load_messages(bot_id: i64, messages: RwSignal<Vec<ChatMessage>>, failure: RwS
 }
 
 fn summary(input: &Value) -> String {
+    if let (Some(host), Some(command)) = (input["host"].as_str(), input["command"].as_str()) {
+        return format!("{host} $ {command}").chars().take(120).collect();
+    }
     let text = ["command", "file_path", "path", "pattern", "url", "query", "description"]
         .iter()
         .find_map(|key| input[*key].as_str().map(str::to_owned))
@@ -71,6 +74,9 @@ fn summary(input: &Value) -> String {
 }
 
 fn detail(input: &Value) -> String {
+    if let (Some(host), Some(command)) = (input["host"].as_str(), input["command"].as_str()) {
+        return format!("{host} $ {command}");
+    }
     let text = input["command"].as_str().map(str::to_owned).unwrap_or_else(|| serde_json::to_string_pretty(input).unwrap_or_default());
     text.chars().take(2000).collect()
 }
