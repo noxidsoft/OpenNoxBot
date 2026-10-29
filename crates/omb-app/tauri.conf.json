@@ -10,6 +10,7 @@
     "frontendDist": "../omb-ui/dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [{ "title": "OpenNoxBot", "width": 1100, "height": 760 }],
     "security": { "csp": null }
   },
