@@ -3058,11 +3058,14 @@ dependencies = [
 name = "omb-core"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.3.4",
  "keyring",
  "omb-wire",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

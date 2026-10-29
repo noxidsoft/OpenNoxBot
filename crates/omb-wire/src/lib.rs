@@ -42,6 +42,7 @@ pub enum MessageRole {
     User,
     Assistant,
     Tool,
+    Approval,
     Error,
 }
 
@@ -52,6 +53,23 @@ pub struct ToolCall {
     pub input: serde_json::Value,
     pub ok: Option<bool>,
     pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalState {
+    Pending,
+    Allowed,
+    Denied,
+}
+
+/// The body of a `MessageRole::Approval` message, as JSON.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalRequest {
+    pub request_id: String,
+    pub tool: String,
+    pub input: serde_json::Value,
+    pub state: ApprovalState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +106,10 @@ pub enum RuntimeEvent {
     ItemStarted { id: String, name: String, input: serde_json::Value },
     #[serde(rename = "item.completed")]
     ItemCompleted { id: String, ok: bool, output: String },
+    #[serde(rename = "request.opened")]
+    RequestOpened { request_id: String, tool: String, input: serde_json::Value },
+    #[serde(rename = "request.resolved")]
+    RequestResolved { request_id: String, allowed: bool },
     #[serde(rename = "turn.completed")]
     TurnCompleted { is_error: bool, result: Option<String>, cost_usd: Option<f64> },
     #[serde(rename = "runtime.error")]

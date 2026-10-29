@@ -1,5 +1,5 @@
 use crate::store::Store;
-use omb_wire::{MessageRole, RuntimeEvent, ToolCall};
+use omb_wire::{ApprovalRequest, ApprovalState, MessageRole, RuntimeEvent, ToolCall};
 use std::collections::HashMap;
 
 /// Persists one turn's events: assistant text and each tool call become messages, in the order they happened.
@@ -8,11 +8,12 @@ pub struct TurnRecorder<'a> {
     bot_id: i64,
     text: String,
     tools: HashMap<String, (i64, ToolCall)>,
+    requests: HashMap<String, (i64, ApprovalRequest)>,
 }
 
 impl<'a> TurnRecorder<'a> {
     pub fn new(store: &'a Store, bot_id: i64) -> Self {
-        Self { store, bot_id, text: String::new(), tools: HashMap::new() }
+        Self { store, bot_id, text: String::new(), tools: HashMap::new(), requests: HashMap::new() }
     }
 
     pub fn apply(&mut self, event: &RuntimeEvent) -> Result<(), String> {
@@ -35,6 +36,20 @@ impl<'a> TurnRecorder<'a> {
                     call.ok = Some(*ok);
                     call.output = output.clone();
                     self.store.set_message_body(*message_id, &body_of(call))
+                }
+                None => Ok(()),
+            },
+            RuntimeEvent::RequestOpened { request_id, tool, input } => {
+                self.flush_text()?;
+                let request = ApprovalRequest { request_id: request_id.clone(), tool: tool.clone(), input: input.clone(), state: ApprovalState::Pending };
+                let message = self.store.add_message(self.bot_id, MessageRole::Approval, &body_of(&request))?;
+                self.requests.insert(request_id.clone(), (message.id, request));
+                Ok(())
+            }
+            RuntimeEvent::RequestResolved { request_id, allowed } => match self.requests.get_mut(request_id) {
+                Some((message_id, request)) => {
+                    request.state = if *allowed { ApprovalState::Allowed } else { ApprovalState::Denied };
+                    self.store.set_message_body(*message_id, &body_of(request))
                 }
                 None => Ok(()),
             },
@@ -63,8 +78,8 @@ impl<'a> TurnRecorder<'a> {
     }
 }
 
-fn body_of(call: &ToolCall) -> String {
-    serde_json::to_string(call).unwrap_or_default()
+fn body_of(body: &impl serde::Serialize) -> String {
+    serde_json::to_string(body).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -125,6 +140,21 @@ mod tests {
         assert_eq!(messages.iter().map(|m| (m.role, m.body.as_str())).collect::<Vec<_>>(), [(MessageRole::Assistant, "half"), (MessageRole::Error, "boom")]);
         let (_, _, messages) = record(&[RuntimeEvent::TurnCompleted { is_error: true, result: Some("limit reached".into()), cost_usd: None }]);
         assert_eq!((messages[0].role, messages[0].body.as_str()), (MessageRole::Error, "limit reached"));
+    }
+
+    #[test]
+    fn a_request_is_saved_as_pending_and_then_marked_with_the_answer() {
+        let opened = RuntimeEvent::RequestOpened { request_id: "r1".into(), tool: "Bash".into(), input: json!({"command":"ls"}) };
+        let (store, bot, messages) = record(&[delta("Let me look"), opened.clone()]);
+        assert_eq!(messages.iter().map(|m| m.role).collect::<Vec<_>>(), [MessageRole::Assistant, MessageRole::Approval]);
+        let saved: ApprovalRequest = serde_json::from_str(&messages[1].body).unwrap();
+        assert_eq!((saved.tool.as_str(), saved.state), ("Bash", ApprovalState::Pending));
+
+        let mut recorder = TurnRecorder::new(&store, bot);
+        recorder.apply(&opened).unwrap();
+        recorder.apply(&RuntimeEvent::RequestResolved { request_id: "r1".into(), allowed: true }).unwrap();
+        let last = store.messages(bot).unwrap().pop().unwrap();
+        assert_eq!(serde_json::from_str::<ApprovalRequest>(&last.body).unwrap().state, ApprovalState::Allowed);
     }
 
     #[test]

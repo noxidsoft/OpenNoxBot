@@ -1,3 +1,6 @@
+pub mod approvals;
+pub mod ids;
+pub mod policy;
 pub mod recorder;
 pub mod secrets;
 pub mod store;

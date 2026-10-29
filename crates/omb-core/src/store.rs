@@ -1,4 +1,4 @@
-use omb_wire::{ApprovalMode, Bot, ChatMessage, EngineId, MessageRole};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, MessageRole};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -125,6 +125,24 @@ impl Store {
         self.conn().execute("UPDATE messages SET body = ?2 WHERE id = ?1", params![id, body]).map(|_| ()).map_err(failed)
     }
 
+    /// A request nobody can answer any more (its turn ended, or the app was closed) is recorded as denied.
+    pub fn expire_pending_approvals(&self) -> Result<(), String> {
+        let pending: Vec<(i64, ApprovalRequest)> = {
+            let conn = self.conn();
+            let mut statement = conn.prepare("SELECT id, body FROM messages WHERE role = ?1").map_err(failed)?;
+            let rows = statement.query_map([text_of(MessageRole::Approval)], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))).map_err(failed)?;
+            rows.filter_map(Result::ok)
+                .filter_map(|(id, body)| serde_json::from_str::<ApprovalRequest>(&body).ok().map(|request| (id, request)))
+                .filter(|(_, request)| request.state == ApprovalState::Pending)
+                .collect()
+        };
+        for (id, mut request) in pending {
+            request.state = ApprovalState::Denied;
+            self.set_message_body(id, &serde_json::to_string(&request).unwrap_or_default())?;
+        }
+        Ok(())
+    }
+
     pub fn messages(&self, bot_id: i64) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn();
         let mut statement = conn.prepare("SELECT id, bot_id, role, body FROM messages WHERE bot_id = ?1 ORDER BY id").map_err(failed)?;
@@ -159,6 +177,18 @@ mod tests {
         store.set_message_body(second.id, "two!").unwrap();
         let bodies: Vec<String> = store.messages(a.id).unwrap().into_iter().map(|m| m.body).collect();
         assert_eq!(bodies, ["one", "two!"]);
+    }
+
+    #[test]
+    fn unanswered_requests_expire_as_denied_and_answered_ones_are_kept() {
+        let store = Store::in_memory().unwrap();
+        let bot = store.create_bot("A", EngineId::Claude, None, ApprovalMode::Ask).unwrap();
+        let body = |state| serde_json::to_string(&ApprovalRequest { request_id: "r".into(), tool: "Bash".into(), input: serde_json::json!({}), state }).unwrap();
+        store.add_message(bot.id, MessageRole::Approval, &body(ApprovalState::Pending)).unwrap();
+        store.add_message(bot.id, MessageRole::Approval, &body(ApprovalState::Allowed)).unwrap();
+        store.expire_pending_approvals().unwrap();
+        let states: Vec<ApprovalState> = store.messages(bot.id).unwrap().iter().map(|m| serde_json::from_str::<ApprovalRequest>(&m.body).unwrap().state).collect();
+        assert_eq!(states, [ApprovalState::Denied, ApprovalState::Allowed]);
     }
 
     #[test]
