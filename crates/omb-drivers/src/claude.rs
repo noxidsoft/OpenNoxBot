@@ -1,4 +1,5 @@
 use crate::host::Host;
+use crate::run::spawn;
 use omb_wire::{ApprovalMode, RuntimeEvent};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -9,12 +10,19 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const STDERR_TAIL: usize = 2048;
 
+/// Only this config's servers are loaded, and `permission_tool` answers the CLI's permission prompts.
+pub struct McpAccess<'a> {
+    pub config: &'a Path,
+    pub permission_tool: &'a str,
+}
+
 pub struct Turn<'a> {
     pub prompt: &'a str,
     pub model: Option<&'a str>,
     pub approval: ApprovalMode,
     pub resume: Option<&'a str>,
     pub cwd: &'a Path,
+    pub mcp: Option<McpAccess<'a>>,
 }
 
 fn permission_mode(approval: ApprovalMode) -> &'static str {
@@ -42,6 +50,9 @@ pub async fn run_turn(bin: &Path, host: &Host, turn: &Turn<'_>, events: &Unbound
     if let Some(session) = turn.resume {
         cmd.args(["--resume", session]);
     }
+    if let Some(mcp) = &turn.mcp {
+        cmd.arg("--mcp-config").arg(mcp.config).args(["--strict-mcp-config", "--permission-prompt-tool", mcp.permission_tool]);
+    }
     cmd.current_dir(turn.cwd)
         .env("PATH", &host.path)
         .env("HOME", &host.home)
@@ -50,7 +61,7 @@ pub async fn run_turn(bin: &Path, host: &Host, turn: &Turn<'_>, events: &Unbound
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child = match cmd.spawn() {
+    let mut child = match spawn(&mut cmd).await {
         Ok(child) => child,
         Err(error) => return fail(format!("could not start claude: {error}")),
     };
@@ -173,13 +184,24 @@ mod tests {
     const RESULT: &str = r#"{"type":"result","is_error":false,"result":"Hello","total_cost_usd":0.01}"#;
 
     async fn play(frames: &[&str], approval: ApprovalMode, model: Option<&str>, resume: Option<&str>) -> (Option<String>, Vec<RuntimeEvent>, std::path::PathBuf) {
+        play_with(frames, approval, model, resume, None).await
+    }
+
+    async fn play_with(
+        frames: &[&str],
+        approval: ApprovalMode,
+        model: Option<&str>,
+        resume: Option<&str>,
+        mcp_config: Option<&Path>,
+    ) -> (Option<String>, Vec<RuntimeEvent>, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.keep();
         let host = host(&root);
         let body = format!("/bin/cat > '{r}/stdin'\nprintf '%s\\n' \"$@\" > '{r}/args'\n/bin/cat <<'EOF'\n{}\nEOF", frames.join("\n"), r = root.display());
         fake(&root.join("bin"), "claude", &body);
         let (tx, mut rx) = unbounded_channel();
-        let turn = Turn { prompt: "hi there", model, approval, resume, cwd: &root };
+        let mcp = mcp_config.map(|config| McpAccess { config, permission_tool: "mcp__nox__approve" });
+        let turn = Turn { prompt: "hi there", model, approval, resume, cwd: &root, mcp };
         let session = run_turn(&root.join("bin/claude"), &host, &turn, &tx).await;
         drop(tx);
         let mut events = Vec::new();
@@ -236,7 +258,7 @@ mod tests {
     async fn a_missing_binary_is_a_runtime_error() {
         let tmp = tempfile::tempdir().unwrap();
         let (tx, mut rx) = unbounded_channel();
-        let turn = Turn { prompt: "x", model: None, approval: ApprovalMode::Ask, resume: None, cwd: tmp.path() };
+        let turn = Turn { prompt: "x", model: None, approval: ApprovalMode::Ask, resume: None, cwd: tmp.path(), mcp: None };
         assert_eq!(run_turn(&tmp.path().join("nope"), &host(tmp.path()), &turn, &tx).await, None);
         assert!(matches!(rx.recv().await, Some(RuntimeEvent::RuntimeError { .. })));
     }
@@ -251,6 +273,18 @@ mod tests {
         for pair in [["--permission-mode", "acceptEdits"], ["--model", "sonnet"], ["--resume", "abc"]] {
             assert!(args.windows(2).any(|w| w == pair), "{pair:?} missing from {args:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_mcp_config_and_permission_tool_reach_the_cli() {
+        let config = std::path::PathBuf::from("/run/turn.json");
+        let (_, _, root) = play_with(&[INIT, RESULT], ApprovalMode::Ask, None, None, Some(&config)).await;
+        let args = std::fs::read_to_string(root.join("args")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        for pair in [["--mcp-config", "/run/turn.json"], ["--permission-prompt-tool", "mcp__nox__approve"]] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} missing from {args:?}");
+        }
+        assert!(args.contains(&"--strict-mcp-config"));
     }
 
     #[test]
