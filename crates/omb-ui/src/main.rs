@@ -1,63 +1,46 @@
+mod api;
+mod api_keys;
+mod engines;
+
+use api_keys::ApiKeys;
+use engines::Engines;
 use leptos::prelude::*;
-use omb_wire::{AuthState, EngineId, EngineStatus};
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], catch)]
-    async fn invoke(cmd: &str) -> Result<JsValue, JsValue>;
-}
-
-async fn detect_engines() -> Result<Vec<EngineStatus>, String> {
-    let value = invoke("detect_engines").await.map_err(|e| format!("{e:?}"))?;
-    serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())
-}
-
-fn label(id: EngineId) -> &'static str {
-    match id {
-        EngineId::Claude => "Claude",
-        EngineId::Codex => "Codex",
-        EngineId::OpenaiApi => "OpenAI API",
-    }
-}
-
-fn state(engine: &EngineStatus) -> &'static str {
-    match (engine.available, engine.auth) {
-        (false, _) => "Not installed",
-        (true, AuthState::SignedIn) => "Signed in",
-        (true, AuthState::SignedOut) => "Signed out",
-        (true, AuthState::Unknown) => "Unknown",
-    }
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Engines,
+    ApiKeys,
 }
 
 #[component]
 fn App() -> impl IntoView {
-    let (engines, set_engines) = signal(Vec::<EngineStatus>::new());
-    let (failure, set_failure) = signal(None::<String>);
-    leptos::task::spawn_local(async move {
-        match detect_engines().await {
-            Ok(found) => set_engines.set(found),
-            Err(message) => set_failure.set(Some(message)),
+    let (page, set_page) = signal(Page::Engines);
+    let item = move |target: Page, name: &'static str| {
+        view! {
+            <button
+                class:active=move || page.get() == target
+                aria-current=move || (page.get() == target).then_some("page")
+                on:click=move |_| set_page.set(target)
+            >
+                {name}
+            </button>
         }
-    });
+    };
 
     view! {
-        <main>
-            <h1>"Engines"</h1>
-            {move || failure.get().map(|message| view! { <p class="failure">{message}</p> })}
-            <ul>
-                <For each=move || engines.get() key=|e| e.id children=|e| {
-                    let detail = [e.account.clone(), e.version.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-                    view! {
-                        <li data-state=state(&e)>
-                            <strong>{label(e.id)}</strong>
-                            <span>{state(&e)}</span>
-                            <small>{detail}</small>
-                        </li>
-                    }
-                } />
-            </ul>
-        </main>
+        <div class="settings">
+            <nav>
+                <h2>"Settings"</h2>
+                {item(Page::Engines, "Engines")}
+                {item(Page::ApiKeys, "API keys")}
+            </nav>
+            <main>
+                {move || match page.get() {
+                    Page::Engines => view! { <Engines /> }.into_any(),
+                    Page::ApiKeys => view! { <ApiKeys /> }.into_any(),
+                }}
+            </main>
+        </div>
     }
 }
 

@@ -16,6 +16,7 @@ pub enum EngineId {
     Claude,
     Codex,
     OpenaiApi,
+    Jev,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

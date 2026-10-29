@@ -22,6 +22,7 @@ pub struct Host {
     pub path: OsString,
     pub codex_home: Option<OsString>,
     pub openai_api_key: bool,
+    pub jev_api_key: bool,
     pub timeout: Duration,
 }
 
@@ -33,6 +34,7 @@ impl Host {
             path: augmented_path(&base, &home),
             codex_home: std::env::var_os("CODEX_HOME"),
             openai_api_key: std::env::var_os("OPENAI_API_KEY").is_some_and(|k| !k.is_empty()),
+            jev_api_key: false,
             timeout: Duration::from_secs(8),
             home,
         }

@@ -7,3 +7,4 @@ repository.workspace = true
 
 [dependencies]
 omb-wire.workspace = true
+keyring = "4"

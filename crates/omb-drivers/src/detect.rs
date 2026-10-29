@@ -4,7 +4,7 @@ use omb_wire::{AuthState, EngineId, EngineStatus};
 
 pub async fn detect_all(host: &Host) -> Vec<EngineStatus> {
     let (claude, codex) = tokio::join!(cli_engine(EngineId::Claude, "claude", host), cli_engine(EngineId::Codex, "codex", host));
-    vec![claude, codex, openai_api(host)]
+    vec![claude, codex, api_key_engine(EngineId::OpenaiApi, host.openai_api_key), api_key_engine(EngineId::Jev, host.jev_api_key)]
 }
 
 async fn cli_engine(id: EngineId, name: &str, host: &Host) -> EngineStatus {
@@ -20,9 +20,9 @@ async fn cli_engine(id: EngineId, name: &str, host: &Host) -> EngineStatus {
     EngineStatus { id, available: true, version, auth, account }
 }
 
-fn openai_api(host: &Host) -> EngineStatus {
-    let auth = if host.openai_api_key { AuthState::SignedIn } else { AuthState::SignedOut };
-    EngineStatus { id: EngineId::OpenaiApi, available: true, version: None, auth, account: None }
+fn api_key_engine(id: EngineId, has_key: bool) -> EngineStatus {
+    let auth = if has_key { AuthState::SignedIn } else { AuthState::SignedOut };
+    EngineStatus { id, available: true, version: None, auth, account: None }
 }
 
 #[cfg(test)]
@@ -46,7 +46,8 @@ mod tests {
             path: bin.into(),
             codex_home: None,
             openai_api_key: false,
-            timeout: Duration::from_millis(400),
+            jev_api_key: false,
+            timeout: Duration::from_secs(10),
         }
     }
 
@@ -80,7 +81,8 @@ mod tests {
     #[tokio::test]
     async fn a_hanging_auth_check_is_unknown_not_signed_out() {
         let tmp = tempfile::tempdir().unwrap();
-        let host = host(tmp.path());
+        let mut host = host(tmp.path());
+        host.timeout = Duration::from_millis(400);
         fake(&tmp.path().join("bin"), "claude", r#"[ "$1" = auth ] && /bin/sleep 30; echo 1.0"#);
         let all = detect_all(&host).await;
         assert_eq!(find(&all, EngineId::Claude).auth, AuthState::Unknown);
@@ -108,11 +110,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_api_follows_the_key() {
+    async fn api_engines_follow_their_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let mut host = host(tmp.path());
-        assert_eq!(find(&detect_all(&host).await, EngineId::OpenaiApi).auth, AuthState::SignedOut);
+        let all = detect_all(&host).await;
+        assert_eq!(find(&all, EngineId::OpenaiApi).auth, AuthState::SignedOut);
+        assert_eq!(find(&all, EngineId::Jev).auth, AuthState::SignedOut);
         host.openai_api_key = true;
-        assert_eq!(find(&detect_all(&host).await, EngineId::OpenaiApi).auth, AuthState::SignedIn);
+        host.jev_api_key = true;
+        let all = detect_all(&host).await;
+        assert_eq!(find(&all, EngineId::OpenaiApi).auth, AuthState::SignedIn);
+        assert_eq!(find(&all, EngineId::Jev).auth, AuthState::SignedIn);
     }
 }
