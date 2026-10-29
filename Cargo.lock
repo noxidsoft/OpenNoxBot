@@ -3161,6 +3161,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "omb-ssh"
+version = "0.0.1"
+dependencies = [
+ "omb-core",
+ "omb-wire",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "omb-ui"
 version = "0.0.1"
 dependencies = [
