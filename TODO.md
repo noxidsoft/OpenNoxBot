@@ -16,9 +16,12 @@
 - Rename a bot; per-bot role and instructions
 - Command allowlist approval level; "always allow" on an approval card
 - AskUserQuestion answered in the UI (today it arrives as a plain approval)
+- Extend the SSH status-command list from the person's own list of routine commands
+- Jev Test button (needs the endpoint)
+- Trust keys for hosts behind ProxyJump
 
 ## Later
 - Sandbox: block raw `ssh`/`scp` and network egress for bot shells (bubblewrap + seccomp)
 - Run headless on a server, desktop as a client
 - Cost tracking per bot and per run
-- Windows and macOS builds
+- Windows and macOS builds (unix-only code in omb-ssh, omb-app and tests needs cfgs)
