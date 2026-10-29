@@ -1,4 +1,4 @@
-use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, MessageRole};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, MessageRole, ToolCall};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -125,20 +125,40 @@ impl Store {
         self.conn().execute("UPDATE messages SET body = ?2 WHERE id = ?1", params![id, body]).map(|_| ()).map_err(failed)
     }
 
-    /// A request nobody can answer any more (its turn ended, or the app was closed) is recorded as denied.
-    pub fn expire_pending_approvals(&self) -> Result<(), String> {
-        let pending: Vec<(i64, ApprovalRequest)> = {
+    /// Work nobody can finish any more (its turn ended, or the app was closed) is closed out: a waiting request is recorded
+    /// as denied and a running tool call as failed. `note` is posted to each affected bot's conversation.
+    pub fn expire_unfinished(&self, bot: Option<i64>, note: Option<&str>) -> Result<(), String> {
+        let rows: Vec<(i64, i64, String, String)> = {
             let conn = self.conn();
-            let mut statement = conn.prepare("SELECT id, body FROM messages WHERE role = ?1").map_err(failed)?;
-            let rows = statement.query_map([text_of(MessageRole::Approval)], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))).map_err(failed)?;
-            rows.filter_map(Result::ok)
-                .filter_map(|(id, body)| serde_json::from_str::<ApprovalRequest>(&body).ok().map(|request| (id, request)))
-                .filter(|(_, request)| request.state == ApprovalState::Pending)
-                .collect()
+            let mut statement = conn.prepare("SELECT id, bot_id, role, body FROM messages WHERE role IN (?1, ?2)").map_err(failed)?;
+            let found = statement
+                .query_map(params![text_of(MessageRole::Approval), text_of(MessageRole::Tool)], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .map_err(failed)?;
+            found.filter_map(Result::ok).filter(|(_, bot_id, _, _)| bot.is_none_or(|only| only == *bot_id)).collect()
         };
-        for (id, mut request) in pending {
-            request.state = ApprovalState::Denied;
-            self.set_message_body(id, &serde_json::to_string(&request).unwrap_or_default())?;
+        let mut affected = std::collections::BTreeSet::new();
+        for (id, bot_id, role, body) in rows {
+            let closed = if role == text_of(MessageRole::Approval) {
+                serde_json::from_str::<ApprovalRequest>(&body).ok().filter(|r| r.state == ApprovalState::Pending).map(|mut r| {
+                    r.state = ApprovalState::Denied;
+                    serde_json::to_string(&r).unwrap_or_default()
+                })
+            } else {
+                serde_json::from_str::<ToolCall>(&body).ok().filter(|c| c.ok.is_none()).map(|mut c| {
+                    c.ok = Some(false);
+                    c.output = "Interrupted".into();
+                    serde_json::to_string(&c).unwrap_or_default()
+                })
+            };
+            if let Some(closed) = closed {
+                self.set_message_body(id, &closed)?;
+                affected.insert(bot_id);
+            }
+        }
+        if let Some(note) = note {
+            for bot_id in affected {
+                self.add_message(bot_id, MessageRole::Error, note)?;
+            }
         }
         Ok(())
     }
@@ -180,15 +200,33 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_requests_expire_as_denied_and_answered_ones_are_kept() {
+    fn unfinished_work_is_closed_out_for_the_bots_asked_about_and_noted_once() {
         let store = Store::in_memory().unwrap();
-        let bot = store.create_bot("A", EngineId::Claude, None, ApprovalMode::Ask).unwrap();
-        let body = |state| serde_json::to_string(&ApprovalRequest { request_id: "r".into(), tool: "Bash".into(), input: serde_json::json!({}), state }).unwrap();
-        store.add_message(bot.id, MessageRole::Approval, &body(ApprovalState::Pending)).unwrap();
-        store.add_message(bot.id, MessageRole::Approval, &body(ApprovalState::Allowed)).unwrap();
-        store.expire_pending_approvals().unwrap();
-        let states: Vec<ApprovalState> = store.messages(bot.id).unwrap().iter().map(|m| serde_json::from_str::<ApprovalRequest>(&m.body).unwrap().state).collect();
-        assert_eq!(states, [ApprovalState::Denied, ApprovalState::Allowed]);
+        let a = store.create_bot("A", EngineId::Claude, None, ApprovalMode::Ask).unwrap();
+        let b = store.create_bot("B", EngineId::Claude, None, ApprovalMode::Ask).unwrap();
+        let request = |state| serde_json::to_string(&ApprovalRequest { request_id: "r".into(), tool: "Bash".into(), input: serde_json::json!({}), state }).unwrap();
+        let call = |ok| serde_json::to_string(&ToolCall { name: "Bash".into(), input: serde_json::json!({}), ok, output: String::new() }).unwrap();
+        for bot in [&a, &b] {
+            store.add_message(bot.id, MessageRole::Approval, &request(ApprovalState::Pending)).unwrap();
+            store.add_message(bot.id, MessageRole::Tool, &call(None)).unwrap();
+            store.add_message(bot.id, MessageRole::Tool, &call(Some(true))).unwrap();
+        }
+
+        store.expire_unfinished(Some(a.id), None).unwrap();
+        let of = |bot: &Bot| store.messages(bot.id).unwrap();
+        assert_eq!(of(&a).len(), 3, "no note unless asked");
+        let first: ApprovalRequest = serde_json::from_str(&of(&a)[0].body).unwrap();
+        assert_eq!(first.state, ApprovalState::Denied);
+        let stuck: ToolCall = serde_json::from_str(&of(&a)[1].body).unwrap();
+        assert_eq!((stuck.ok, stuck.output.as_str()), (Some(false), "Interrupted"));
+        let done: ToolCall = serde_json::from_str(&of(&a)[2].body).unwrap();
+        assert_eq!(done.ok, Some(true), "finished calls are left alone");
+        let other: ApprovalRequest = serde_json::from_str(&of(&b)[0].body).unwrap();
+        assert_eq!(other.state, ApprovalState::Pending, "another bot's turn may still be running");
+
+        store.expire_unfinished(None, Some("The app closed before this turn finished")).unwrap();
+        assert_eq!(of(&b).last().map(|m| (m.role, m.body.as_str())), Some((MessageRole::Error, "The app closed before this turn finished")));
+        assert_eq!(of(&a).len(), 3, "a was already closed out, so it gets no note");
     }
 
     #[test]

@@ -163,7 +163,7 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: 
     }
     let _ = driver.await;
     let _ = std::fs::remove_file(&config);
-    let _ = store.expire_pending_approvals();
+    let _ = store.expire_unfinished(Some(bot.id), None);
 }
 
 /// The turn's MCP config holds its bearer token, so only the owner may read it.

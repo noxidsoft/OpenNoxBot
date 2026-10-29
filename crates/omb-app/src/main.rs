@@ -21,7 +21,7 @@ fn main() {
             };
             std::fs::create_dir_all(&data)?;
             let store = Arc::new(omb_core::store::Store::open(&data.join("opennoxbot.db"))?);
-            store.expire_pending_approvals()?;
+            store.expire_unfinished(None, Some("The app closed before this turn finished"))?;
             let approvals = Arc::new(omb_core::approvals::Approvals::default());
             let mcp = Arc::new(tauri::async_runtime::block_on(omb_mcp::McpServer::start(approvals.clone()))?);
             app.manage(AppState { store, data, running: Mutex::new(HashSet::new()), approvals, mcp });
