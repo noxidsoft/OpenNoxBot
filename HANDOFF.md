@@ -22,13 +22,13 @@ Guardrails come first: nothing unattended until approvals, policy and logging ar
 | 1 | Engine detection (claude, codex, OpenAI key, Jev key), Settings, masked Jev key in the OS keyring | done, user-tested |
 | 2 | Chat with streaming, tool cards, SQLite store, approval cards (loopback MCP permission server) | done, user-tested |
 | 3 | Guarded SSH: host registry, pinned keys, per-host policy, `ssh_exec`, audit log, Settings → Hosts | done; user added two real hosts, trusted keys, Test says Connected, `list my hosts` works in chat |
-| 4 | MCP connections. Email done and committed, **not yet user-tested** (real IMAP path has no hermetic test); Stripe, Xero, Google Sheets next | in progress |
+| 4 | MCP connections. Email done, user-tested; Stripe, Xero, Google Sheets next | in progress |
 | 5 | Chief + role workers | not started |
 | 6 | Automations, headless-capable core | not started |
 
 What the user reported about Stage 3: "other tests passed for me". They skipped one "rename test" because those hosts are part of their real workflow. That test is not in my checklist, so it is probably the "make a change on a host" step (create a file, expect an approval card). Treat the change-with-approval path on a real host and the read-only/Refused path as **not confirmed by the user**. The Activity log was empty in their screenshot. It is covered by tests against a throwaway sshd and the real `claude`, not by them.
 
-Git: branch `main`, **21 commits are not pushed**. The user pushed twice when they said "push it" and has not asked since. Ask before pushing.
+Git: branch `main`, everything is pushed as of the email UAT. Ask before pushing again.
 
 Tests: about 80 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
 
