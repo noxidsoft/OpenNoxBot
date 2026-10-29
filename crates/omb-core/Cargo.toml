@@ -1,0 +1,9 @@
+[package]
+name = "omb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omb-wire.workspace = true
