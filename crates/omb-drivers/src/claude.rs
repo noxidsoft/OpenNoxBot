@@ -14,6 +14,7 @@ const STDERR_TAIL: usize = 2048;
 pub struct McpAccess<'a> {
     pub config: &'a Path,
     pub permission_tool: &'a str,
+    pub disallowed_tools: &'a [&'a str],
 }
 
 pub struct Turn<'a> {
@@ -52,6 +53,9 @@ pub async fn run_turn(bin: &Path, host: &Host, turn: &Turn<'_>, events: &Unbound
     }
     if let Some(mcp) = &turn.mcp {
         cmd.arg("--mcp-config").arg(mcp.config).args(["--strict-mcp-config", "--permission-prompt-tool", mcp.permission_tool]);
+        if !mcp.disallowed_tools.is_empty() {
+            cmd.arg("--disallowedTools").args(mcp.disallowed_tools);
+        }
     }
     cmd.current_dir(turn.cwd)
         .env("PATH", &host.path)
@@ -200,7 +204,7 @@ mod tests {
         let body = format!("/bin/cat > '{r}/stdin'\nprintf '%s\\n' \"$@\" > '{r}/args'\n/bin/cat <<'EOF'\n{}\nEOF", frames.join("\n"), r = root.display());
         fake(&root.join("bin"), "claude", &body);
         let (tx, mut rx) = unbounded_channel();
-        let mcp = mcp_config.map(|config| McpAccess { config, permission_tool: "mcp__nox__approve" });
+        let mcp = mcp_config.map(|config| McpAccess { config, permission_tool: "mcp__nox__approve", disallowed_tools: &["Bash(ssh:*)"] });
         let turn = Turn { prompt: "hi there", model, approval, resume, cwd: &root, mcp };
         let session = run_turn(&root.join("bin/claude"), &host, &turn, &tx).await;
         drop(tx);
@@ -285,6 +289,7 @@ mod tests {
             assert!(args.windows(2).any(|w| w == pair), "{pair:?} missing from {args:?}");
         }
         assert!(args.contains(&"--strict-mcp-config"));
+        assert!(args.windows(2).any(|w| w == ["--disallowedTools", "Bash(ssh:*)"]), "{args:?}");
     }
 
     #[test]

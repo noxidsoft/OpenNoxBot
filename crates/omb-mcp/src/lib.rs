@@ -8,6 +8,8 @@ use axum::{Json, Router};
 use omb_core::approvals::{Approvals, Decision};
 use omb_core::ids::random_hex;
 use omb_core::policy::own_reads::reads_own_files;
+use omb_core::store::Store;
+use omb_ssh::SshRunner;
 use omb_wire::RuntimeEvent;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -15,8 +17,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
+mod ssh_tools;
+
 pub const SERVER_NAME: &str = "nox";
 pub const PERMISSION_TOOL: &str = "mcp__nox__approve";
+
+/// Refused by the CLI itself, whatever its approval mode, because the permission callback never runs in Full access.
+pub const DISALLOWED_TOOLS: [&str; 5] = ["Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(sshfs:*)", "Bash(ssh-copy-id:*)"];
 
 pub struct TurnContext {
     pub bot_id: i64,
@@ -24,9 +31,17 @@ pub struct TurnContext {
     pub events: UnboundedSender<RuntimeEvent>,
 }
 
+pub struct Services {
+    pub approvals: Arc<Approvals>,
+    pub store: Arc<Store>,
+    pub ssh: Arc<SshRunner>,
+}
+
 struct Shared {
     turns: Mutex<HashMap<String, Arc<TurnContext>>>,
     approvals: Arc<Approvals>,
+    store: Arc<Store>,
+    ssh: Arc<SshRunner>,
 }
 
 pub struct McpServer {
@@ -43,10 +58,10 @@ pub struct TurnAccess {
 }
 
 impl McpServer {
-    pub async fn start(approvals: Arc<Approvals>) -> std::io::Result<Self> {
+    pub async fn start(services: Services) -> std::io::Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
-        let shared = Arc::new(Shared { turns: Mutex::new(HashMap::new()), approvals });
+        let shared = Arc::new(Shared { turns: Mutex::new(HashMap::new()), approvals: services.approvals, store: services.store, ssh: services.ssh });
         let app = router(shared.clone());
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -113,11 +128,19 @@ async fn handle(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Byt
             }),
         ),
         Some("ping") => reply(&id, json!({})),
-        Some("tools/list") => reply(&id, json!({ "tools": [approve_tool()] })),
+        Some("tools/list") => {
+            let mut tools = vec![approve_tool()];
+            tools.extend(ssh_tools::definitions());
+            reply(&id, json!({ "tools": tools }))
+        }
         Some("tools/call") => match message["params"]["name"].as_str() {
             Some("approve") => {
                 let text = approve(&turn, &shared.approvals, &message["params"]["arguments"]).await;
                 reply(&id, json!({ "content": [{ "type": "text", "text": text }] }))
+            }
+            Some(name @ ("ssh_hosts" | "ssh_exec")) => {
+                let done = if name == "ssh_hosts" { ssh_tools::hosts(&shared).await } else { ssh_tools::exec(&shared, &turn, &message["params"]["arguments"]).await };
+                reply(&id, json!({ "isError": done.is_error, "content": [{ "type": "text", "text": done.text }] }))
             }
             _ => reply(&id, json!({ "isError": true, "content": [{ "type": "text", "text": "unknown tool" }] })),
         },
@@ -137,10 +160,25 @@ fn approve_tool() -> Value {
     })
 }
 
+/// Whether a shell line starts a remote-shell program. Best effort: a program that runs another still gets through, so
+/// the hard stop is the sandbox, not this check.
+fn runs_remote_shell(command: &str) -> bool {
+    const PROGRAMS: [&str; 6] = ["ssh", "scp", "sftp", "sshfs", "ssh-copy-id", "ssh-add"];
+    const WRAPPERS: [&str; 6] = ["sudo", "time", "exec", "command", "nohup", "env"];
+    command.split([';', '|', '&', '\n', '(', '`']).any(|segment| {
+        let first = segment.split_whitespace().find(|word| !word.contains('=') && !WRAPPERS.contains(word));
+        first.is_some_and(|word| PROGRAMS.contains(&word.rsplit('/').next().unwrap_or(word)))
+    })
+}
+
 async fn approve(turn: &TurnContext, approvals: &Approvals, args: &Value) -> String {
     let tool = args["tool_name"].as_str().unwrap_or_default();
     let input = args["input"].clone();
-    let allowed = reads_own_files(&turn.folder, tool, &input) || approvals.ask(&turn.events, tool, &input).await == Decision::Allow;
+    if tool == "Bash" && input["command"].as_str().is_some_and(runs_remote_shell) {
+        return json!({ "behavior": "deny", "message": "Use the ssh_exec tool to reach other machines; running ssh, scp or sftp yourself is not allowed." }).to_string();
+    }
+    let ours = tool.starts_with("mcp__nox__");
+    let allowed = ours || reads_own_files(&turn.folder, tool, &input) || approvals.ask(&turn.events, tool, &input).await == Decision::Allow;
     if allowed {
         json!({ "behavior": "allow", "updatedInput": input })
     } else {
@@ -154,6 +192,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use omb_wire::{HostPolicy, NewHost, SshOutcome};
     use tokio::sync::mpsc::unbounded_channel;
     use tower::ServiceExt;
 
@@ -161,17 +200,46 @@ mod tests {
         server: McpServer,
         access: TurnAccess,
         approvals: Arc<Approvals>,
+        store: Arc<Store>,
         events: tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
         folder: tempfile::TempDir,
+        _ssh: tempfile::TempDir,
+    }
+
+    /// A fake `ssh` that answers `-G` and echoes the rest, and a known_hosts holding a real key for the one host it names.
+    fn fake_ssh() -> (tempfile::TempDir, SshRunner) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("k");
+        assert!(std::process::Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", ""]).arg("-f").arg(&key).status().unwrap().success());
+        let public = std::fs::read_to_string(dir.path().join("k.pub")).unwrap();
+        let blob: Vec<&str> = public.split_whitespace().take(2).collect();
+        std::fs::write(dir.path().join("known_hosts"), format!("[127.0.0.1]:2222 {} {}\n", blob[0], blob[1])).unwrap();
+        let script = "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; [ \"$a\" = -G ] && g=1; done\nif [ -n \"$g\" ]; then\n  if [ \"$last\" = untrusted.lan ]; then echo hostname 10.9.9.9; echo port 22; else echo hostname 127.0.0.1; echo port 2222; fi\n  exit 0\nfi\necho \"ran: $*\"\n";
+        let path = dir.path().join("ssh");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = SshRunner::new(dir.path().join("known_hosts"), dir.path().join("ctl")).with_binary(path);
+        (dir, runner)
     }
 
     async fn fixture() -> Fixture {
         let approvals = Arc::new(Approvals::default());
-        let server = McpServer::start(approvals.clone()).await.unwrap();
+        let store = Arc::new(Store::in_memory().unwrap());
+        for (name, target, policy) in [
+            ("ro", "ro.lan", HostPolicy::ReadOnly),
+            ("ask", "ask.lan", HostPolicy::Ask),
+            ("full", "full.lan", HostPolicy::Full),
+            ("untrusted", "untrusted.lan", HostPolicy::Ask),
+        ] {
+            store.add_host(&NewHost { name: name.into(), target: target.into(), user: None, port: Some(2222), policy }).unwrap();
+        }
+        let (ssh_dir, ssh) = fake_ssh();
+        let server = McpServer::start(Services { approvals: approvals.clone(), store: store.clone(), ssh: Arc::new(ssh) }).await.unwrap();
         let (tx, events) = unbounded_channel();
         let folder = tempfile::tempdir().unwrap();
         let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx });
-        Fixture { server, access, approvals, events, folder }
+        Fixture { server, access, approvals, store, events, folder, _ssh: ssh_dir }
     }
 
     async fn post(f: &Fixture, token: Option<&str>, message: Value) -> (StatusCode, Value) {
@@ -256,5 +324,99 @@ mod tests {
         assert_eq!(server["type"], "http");
         assert!(server["url"].as_str().unwrap().starts_with("http://127.0.0.1:"));
         assert_eq!(server["headers"]["Authorization"], format!("Bearer {}", f.access.token));
+    }
+
+    fn tool(id: u64, name: &str, arguments: Value) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})
+    }
+
+    fn text(response: &Value) -> String {
+        response["result"]["content"][0]["text"].as_str().unwrap().to_owned()
+    }
+
+    async fn exec(f: &Fixture, host: &str, command: &str) -> (String, bool) {
+        let (_, response) = post(f, None, tool(1, "ssh_exec", json!({"host": host, "command": command}))).await;
+        (text(&response), response["result"]["isError"] == true)
+    }
+
+    fn outcomes(f: &Fixture) -> Vec<(String, SshOutcome)> {
+        f.store.ssh_log(20).unwrap().into_iter().rev().map(|e| (e.command, e.outcome)).collect()
+    }
+
+    #[tokio::test]
+    async fn the_host_list_says_what_each_host_allows_and_whether_it_can_connect() {
+        let f = fixture().await;
+        let (_, response) = post(&f, None, tool(1, "ssh_hosts", json!({}))).await;
+        let listing = text(&response);
+        assert!(listing.contains("ro — read-only") && listing.contains("full — every command runs"), "{listing}");
+        assert!(listing.contains("untrusted — status commands run; anything else waits for the person (key not trusted yet"), "{listing}");
+        let (_, tools) = post(&f, None, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).await;
+        let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["approve", "ssh_hosts", "ssh_exec"]);
+    }
+
+    #[tokio::test]
+    async fn status_commands_run_at_once_on_a_read_only_host_and_anything_else_is_refused_unsent() {
+        let mut f = fixture().await;
+        let (ran, error) = exec(&f, "ro", "uptime").await;
+        assert!(!error && ran.contains("exit code: 0") && ran.contains("ran:") && ran.ends_with("uptime"), "{ran}");
+        let (refused, error) = exec(&f, "ro", "systemctl restart nginx").await;
+        assert!(error && refused.contains("read-only") && !refused.contains("ran:"), "{refused}");
+        assert!(f.events.try_recv().is_err(), "a read-only host never asks");
+        assert_eq!(outcomes(&f), [("uptime".into(), SshOutcome::Ran), ("systemctl restart nginx".into(), SshOutcome::Refused)]);
+    }
+
+    #[tokio::test]
+    async fn an_ask_host_waits_for_the_person_before_changing_anything() {
+        for (decide, ran, outcome) in [(Decision::Allow, true, SshOutcome::Ran), (Decision::Deny, false, SshOutcome::Declined)] {
+            let mut f = fixture().await;
+            let router = router(f.server.shared.clone());
+            let request = Request::post("/mcp")
+                .header("authorization", format!("Bearer {}", f.access.token))
+                .body(Body::from(tool(1, "ssh_exec", json!({"host": "ask", "command": "systemctl restart nginx"})).to_string()))
+                .unwrap();
+            let waiting = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+            let Some(RuntimeEvent::RequestOpened { request_id, tool, input }) = f.events.recv().await else { panic!("nobody was asked") };
+            assert_eq!((tool.as_str(), &input["host"], &input["command"]), ("SSH", &json!("ask"), &json!("systemctl restart nginx")));
+            assert!(f.approvals.answer(&request_id, decide));
+            let bytes = axum::body::to_bytes(waiting.await.unwrap().into_body(), usize::MAX).await.unwrap();
+            let reply = text(&serde_json::from_slice(&bytes).unwrap());
+            assert_eq!(reply.contains("ran:"), ran, "{reply}");
+            assert_eq!(outcomes(&f), [("systemctl restart nginx".into(), outcome)]);
+        }
+    }
+
+    #[tokio::test]
+    async fn status_commands_do_not_ask_on_an_ask_host_and_a_full_host_never_asks() {
+        let mut f = fixture().await;
+        assert!(exec(&f, "ask", "df -h").await.0.contains("ran:"));
+        assert!(exec(&f, "full", "reboot").await.0.contains("ran:"));
+        assert!(f.events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_or_unknown_host_is_not_contacted_and_nobody_is_asked() {
+        let mut f = fixture().await;
+        let (untrusted, error) = exec(&f, "untrusted", "reboot").await;
+        assert!(error && untrusted.contains("Settings → Hosts") && !untrusted.contains("ran:"), "{untrusted}");
+        let (unknown, error) = exec(&f, "nope", "uptime").await;
+        assert!(error && unknown.contains("Hosts: ask, full, ro, untrusted"), "{unknown}");
+        assert!(f.events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn our_own_tools_pass_the_permission_gate_and_raw_ssh_is_denied_without_asking() {
+        let mut f = fixture().await;
+        for (tool, input, behavior) in [
+            ("mcp__nox__ssh_exec", json!({"host": "ask", "command": "x"}), "allow"),
+            ("Bash", json!({"command": "ssh deploy@web.lan uptime"}), "deny"),
+            ("Bash", json!({"command": "echo hi && sudo scp a b:c"}), "deny"),
+            ("Bash", json!({"command": "FOO=1 /usr/bin/ssh host"}), "deny"),
+        ] {
+            let (_, response) = post(&f, None, call(1, tool, input.clone())).await;
+            assert_eq!(decision(&response)["behavior"], behavior, "{input}");
+        }
+        assert!(f.events.try_recv().is_err());
+        assert!(!runs_remote_shell("grep ssh notes.txt") && !runs_remote_shell("cat ~/.ssh/config") && !runs_remote_shell("ls"));
     }
 }

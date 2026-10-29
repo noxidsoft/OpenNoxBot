@@ -2,7 +2,7 @@
 //! `cargo test -p omb-mcp --test real_claude -- --ignored --test-threads=1`
 use omb_core::approvals::{Approvals, Decision};
 use omb_drivers::{Host, McpAccess, Turn, run_turn};
-use omb_mcp::{McpServer, PERMISSION_TOOL, TurnContext};
+use omb_mcp::{DISALLOWED_TOOLS, McpServer, PERMISSION_TOOL, Services, TurnContext};
 use omb_wire::{ApprovalMode, RuntimeEvent};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,9 @@ async fn play(prompt: &str, decide: Decision) -> Outcome {
     let host = Host::from_process();
     let bin = host.resolve("claude").expect("claude is installed");
     let approvals = Arc::new(Approvals::default());
-    let server = McpServer::start(approvals.clone()).await.unwrap();
+    let store = Arc::new(omb_core::store::Store::in_memory().unwrap());
+    let ssh = Arc::new(omb_ssh::SshRunner::new(std::env::temp_dir().join("nox-test-known"), std::env::temp_dir().join("nox-test-ctl")));
+    let server = McpServer::start(Services { approvals: approvals.clone(), store, ssh }).await.unwrap();
     let folder = tempfile::tempdir().unwrap();
     let (tx, mut rx) = unbounded_channel();
     let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx.clone() });
@@ -33,7 +35,7 @@ async fn play(prompt: &str, decide: Decision) -> Outcome {
                 approval: ApprovalMode::Ask,
                 resume: None,
                 cwd: &cwd,
-                mcp: Some(McpAccess { config: &config, permission_tool: PERMISSION_TOOL }),
+                mcp: Some(McpAccess { config: &config, permission_tool: PERMISSION_TOOL, disallowed_tools: &DISALLOWED_TOOLS }),
             };
             run_turn(&bin, &host, &turn, &tx).await
         })

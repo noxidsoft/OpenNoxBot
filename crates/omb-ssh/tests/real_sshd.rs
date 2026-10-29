@@ -88,4 +88,6 @@ async fn pins_the_servers_key_and_then_runs_commands_safely() {
 
     let slow = runner.exec(&host, "sleep 30", Duration::from_secs(1)).await;
     assert!(slow.timed_out);
+
+    runner.disconnect(&host).await;
 }

@@ -3153,6 +3153,7 @@ dependencies = [
  "axum",
  "omb-core",
  "omb-drivers",
+ "omb-ssh",
  "omb-wire",
  "serde_json",
  "tempfile",

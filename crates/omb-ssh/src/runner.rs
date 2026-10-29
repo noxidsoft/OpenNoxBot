@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 pub struct SshRunner {
+    ssh: PathBuf,
     known_hosts: PathBuf,
     control_dir: PathBuf,
     extra: Vec<OsString>,
@@ -34,7 +35,12 @@ const CONNECT: Duration = Duration::from_secs(10);
 impl SshRunner {
     /// `known_hosts` holds only keys the person pinned; `control_dir` must be short enough for a unix socket path.
     pub fn new(known_hosts: PathBuf, control_dir: PathBuf) -> Self {
-        Self { known_hosts, control_dir, extra: Vec::new() }
+        Self { ssh: PathBuf::from("ssh"), known_hosts, control_dir, extra: Vec::new() }
+    }
+
+    pub fn with_binary(mut self, ssh: PathBuf) -> Self {
+        self.ssh = ssh;
+        self
     }
 
     /// Extra leading `ssh` arguments, for a test server's key and config.
@@ -100,7 +106,7 @@ impl SshRunner {
         if let Err(error) = self.ensure_dirs() {
             return failed(format!("could not prepare ssh: {error}"));
         }
-        let mut cmd = Command::new("ssh");
+        let mut cmd = Command::new(&self.ssh);
         cmd.args(self.args(host, command));
         match run(cmd, timeout).await {
             Ok(done) => ExecOutcome { exit_code: done.code, stdout: done.stdout, stderr: done.stderr, timed_out: false, truncated: done.truncated, error: None },
@@ -109,9 +115,18 @@ impl SshRunner {
         }
     }
 
+    /// Closes the connection kept open for reuse, so a removed host or a changed policy takes effect at once.
+    pub async fn disconnect(&self, host: &SshHost) {
+        let mut control = OsString::from("ControlPath=");
+        control.push(self.control_dir.join("%C"));
+        let mut cmd = Command::new(&self.ssh);
+        cmd.args(&self.extra).args(Self::destination(host)).arg("-o").arg(control).args(["-O", "exit", "--"]).arg(&host.target);
+        let _ = run(cmd, CONNECT).await;
+    }
+
     /// The address and port `ssh` really connects to, after the person's ssh config has had its say.
     async fn resolve(&self, host: &SshHost) -> Result<(String, u16), String> {
-        let mut cmd = Command::new("ssh");
+        let mut cmd = Command::new(&self.ssh);
         cmd.args(&self.extra).args(Self::destination(host)).args(["-G", "--"]).arg(&host.target);
         let done = run(cmd, CONNECT).await.map_err(|_| "ssh could not be started".to_owned())?;
         let field = |name: &str| done.stdout.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')).map(str::trim);
