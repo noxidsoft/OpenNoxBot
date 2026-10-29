@@ -4,8 +4,8 @@
   "version": "0.0.1",
   "identifier": "dev.noxidsoft.opennoxbot",
   "build": {
-    "beforeDevCommand": "trunk serve",
-    "beforeBuildCommand": "trunk build --release",
+    "beforeDevCommand": { "script": "trunk serve", "cwd": "../omb-ui" },
+    "beforeBuildCommand": { "script": "trunk build --release", "cwd": "../omb-ui" },
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../omb-ui/dist"
   },
