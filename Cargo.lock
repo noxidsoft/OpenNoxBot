@@ -3113,7 +3113,9 @@ version = "0.0.1"
 dependencies = [
  "omb-core",
  "omb-drivers",
+ "omb-mcp",
  "omb-wire",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tokio",

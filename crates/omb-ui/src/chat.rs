@@ -1,6 +1,6 @@
 use crate::api::{call, on_event};
 use leptos::prelude::*;
-use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, MessageRole, RuntimeEvent, ToolCall};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, BotEvent, ChatMessage, MessageRole, RuntimeEvent, ToolCall};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -16,6 +16,13 @@ struct BotArg {
 struct SendArgs<'a> {
     bot_id: i64,
     text: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnswerArgs<'a> {
+    request_id: &'a str,
+    allow: bool,
 }
 
 #[derive(Serialize)]
@@ -63,12 +70,59 @@ fn summary(input: &Value) -> String {
     text.chars().take(120).collect()
 }
 
+fn detail(input: &Value) -> String {
+    let text = input["command"].as_str().map(str::to_owned).unwrap_or_else(|| serde_json::to_string_pretty(input).unwrap_or_default());
+    text.chars().take(2000).collect()
+}
+
+#[component]
+fn ApprovalCard(request: ApprovalRequest) -> impl IntoView {
+    let failure = RwSignal::new(None::<String>);
+    let id = request.request_id.clone();
+    let answer = Callback::new(move |allow: bool| {
+        let id = id.clone();
+        leptos::task::spawn_local(async move {
+            if let Err(message) = call::<()>("answer_request", AnswerArgs { request_id: &id, allow }).await {
+                failure.set(Some(message));
+            }
+        });
+    });
+    let (state, label) = match request.state {
+        ApprovalState::Pending => ("pending", ""),
+        ApprovalState::Allowed => ("allowed", "Allowed"),
+        ApprovalState::Denied => ("denied", "Denied"),
+    };
+    let (headline, body) = (summary(&request.input), detail(&request.input));
+    let repeats = headline == body;
+    view! {
+        <div class="msg approval" data-state=state>
+            <div class="ask">
+                <strong>{request.tool.clone()}</strong>
+                {(!repeats).then(|| view! { <code>{headline.clone()}</code> })}
+            </div>
+            <pre>{body}</pre>
+            {(request.state == ApprovalState::Pending).then(|| view! {
+                <div class="actions">
+                    <button class="allow" on:click=move |_| answer.run(true)>"Allow"</button>
+                    <button class="secondary" on:click=move |_| answer.run(false)>"Deny"</button>
+                </div>
+            })}
+            {(!label.is_empty()).then(|| view! { <span class="status">{label}</span> })}
+            {move || failure.get().map(|message| view! { <p class="failure">{message}</p> })}
+        </div>
+    }
+}
+
 #[component]
 fn MessageView(message: ChatMessage) -> impl IntoView {
     match message.role {
         MessageRole::User => view! { <div class="msg user">{message.body}</div> }.into_any(),
         MessageRole::Assistant => view! { <div class="msg assistant">{message.body}</div> }.into_any(),
         MessageRole::Error => view! { <div class="msg error">{message.body}</div> }.into_any(),
+        MessageRole::Approval => match serde_json::from_str::<ApprovalRequest>(&message.body) {
+            Ok(request) => view! { <ApprovalCard request=request /> }.into_any(),
+            Err(_) => view! { <div class="msg error">"Unreadable approval request"</div> }.into_any(),
+        },
         MessageRole::Tool => {
             let call = serde_json::from_str::<ToolCall>(&message.body).unwrap_or(ToolCall {
                 name: "Tool".into(),
@@ -112,6 +166,14 @@ pub fn Chat(#[prop(into)] open_settings: Callback<()>) -> impl IntoView {
     let scroller = NodeRef::<leptos::html::Div>::new();
 
     let current = Memo::new(move |_| selected.get().and_then(|id| bots.with(|all| all.iter().find(|b| b.id == id).cloned())));
+    let waiting = Memo::new(move |_| {
+        messages.with(|all| {
+            all.last().is_some_and(|m| {
+                m.role == MessageRole::Approval
+                    && serde_json::from_str::<ApprovalRequest>(&m.body).is_ok_and(|r| r.state == ApprovalState::Pending)
+            })
+        })
+    });
     let busy = Memo::new(move |_| selected.get().is_some_and(|id| running.with(|r| r.contains(&id))));
 
     let select = move |id: i64| {
@@ -321,12 +383,12 @@ pub fn Chat(#[prop(into)] open_settings: Callback<()>) -> impl IntoView {
                             </button>
                         </header>
                         <div class="messages" node_ref=scroller>
-                            <For each=move || messages.get() key=|m| (m.id, m.body.len()) children=|m| view! { <MessageView message=m /> } />
+                            <For each=move || messages.get() key=|m| (m.id, m.body.clone()) children=|m| view! { <MessageView message=m /> } />
                             {move || {
                                 let text = live.get();
                                 (!text.is_empty()).then(|| view! { <div class="msg assistant live">{text}</div> })
                             }}
-                            {move || (busy.get() && live.with(|l| l.is_empty())).then(|| view! { <div class="thinking">"…"</div> })}
+                            {move || (busy.get() && !waiting.get() && live.with(|l| l.is_empty())).then(|| view! { <div class="thinking">"…"</div> })}
                         </div>
                         {move || failure.get().map(|message| view! { <p class="failure">{message}</p> })}
                         <form class="composer" on:submit=move |ev| { ev.prevent_default(); send(); }>

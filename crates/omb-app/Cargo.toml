@@ -12,5 +12,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 omb-core.workspace = true
 omb-drivers = { path = "../omb-drivers" }
+omb-mcp = { path = "../omb-mcp" }
 omb-wire.workspace = true
 tokio = { version = "1", features = ["sync"] }
+serde_json.workspace = true

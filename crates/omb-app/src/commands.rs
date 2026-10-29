@@ -1,7 +1,10 @@
+use omb_core::approvals::{Approvals, Decision};
+use omb_core::ids::random_hex;
 use omb_core::recorder::TurnRecorder;
 use omb_core::secrets::{self, Secret};
 use omb_core::store::Store;
-use omb_drivers::{Host, Turn, run_turn};
+use omb_drivers::{Host, McpAccess, Turn, run_turn};
+use omb_mcp::{McpServer, PERMISSION_TOOL, TurnContext};
 use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, EngineId, EngineStatus, MessageRole, RuntimeEvent};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -12,6 +15,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub data: PathBuf,
     pub running: Mutex<HashSet<i64>>,
+    pub approvals: Arc<Approvals>,
+    pub mcp: Arc<McpServer>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -101,10 +106,10 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, bot_id: i64, tex
             return Err(error);
         }
     };
-    let (store, data) = (state.store.clone(), state.data.clone());
+    let (store, data, mcp) = (state.store.clone(), state.data.clone(), state.mcp.clone());
     let finished = app.clone();
     tauri::async_runtime::spawn(async move {
-        play_turn(&app, &store, &data, &bot, &text).await;
+        play_turn(&app, &store, &data, &mcp, &bot, &text).await;
         let state = finished.state::<AppState>();
         if let Ok(mut running) = state.running.lock() {
             running.remove(&bot.id);
@@ -113,7 +118,7 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, bot_id: i64, tex
     Ok(message)
 }
 
-async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, bot: &Bot, text: &str) {
+async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: &McpServer, bot: &Bot, text: &str) {
     let emit = |event: RuntimeEvent| {
         let _ = app.emit("runtime", BotEvent { bot_id: bot.id, event });
     };
@@ -132,9 +137,20 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, bot: 
     let resume = store.session(bot.id).ok().flatten();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let (model, approval, prompt) = (bot.model.clone(), bot.approval, text.to_owned());
+    let access = mcp.register(TurnContext { bot_id: bot.id, folder: cwd.clone(), events: tx.clone() });
+    let config = match write_turn_config(data, &access.config()) {
+        Ok(path) => path,
+        Err(error) => {
+            let event = RuntimeEvent::RuntimeError { message: format!("could not prepare the turn: {error}") };
+            let _ = TurnRecorder::new(store, bot.id).apply(&event);
+            return emit(event);
+        }
+    };
+    let (model, approval, prompt, config_path) = (bot.model.clone(), bot.approval, text.to_owned(), config.clone());
     let driver = tokio::spawn(async move {
-        let turn = Turn { prompt: &prompt, model: model.as_deref(), approval, resume: resume.as_deref(), cwd: &cwd };
+        let _access = access;
+        let mcp = McpAccess { config: &config_path, permission_tool: PERMISSION_TOOL };
+        let turn = Turn { prompt: &prompt, model: model.as_deref(), approval, resume: resume.as_deref(), cwd: &cwd, mcp: Some(mcp) };
         run_turn(&bin, &host, &turn, &tx).await
     });
 
@@ -146,4 +162,26 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, bot: 
         emit(event);
     }
     let _ = driver.await;
+    let _ = std::fs::remove_file(&config);
+    let _ = store.expire_pending_approvals();
+}
+
+/// The turn's MCP config holds its bearer token, so only the owner may read it.
+fn write_turn_config(data: &std::path::Path, config: &serde_json::Value) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    let dir = data.join("run");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.json", random_hex(16)));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(&path)?.write_all(config.to_string().as_bytes())?;
+    Ok(path)
+}
+
+#[tauri::command]
+pub fn answer_request(state: State<'_, AppState>, request_id: String, allow: bool) -> Result<(), String> {
+    let decision = if allow { Decision::Allow } else { Decision::Deny };
+    if state.approvals.answer(&request_id, decision) { Ok(()) } else { Err("This request is no longer waiting".into()) }
 }

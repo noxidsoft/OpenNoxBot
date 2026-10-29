@@ -21,7 +21,10 @@ fn main() {
             };
             std::fs::create_dir_all(&data)?;
             let store = Arc::new(omb_core::store::Store::open(&data.join("opennoxbot.db"))?);
-            app.manage(AppState { store, data, running: Mutex::new(HashSet::new()) });
+            store.expire_pending_approvals()?;
+            let approvals = Arc::new(omb_core::approvals::Approvals::default());
+            let mcp = Arc::new(tauri::async_runtime::block_on(omb_mcp::McpServer::start(approvals.clone()))?);
+            app.manage(AppState { store, data, running: Mutex::new(HashSet::new()), approvals, mcp });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +40,7 @@ fn main() {
             commands::list_messages,
             commands::running_bots,
             commands::send_message,
+            commands::answer_request,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenNoxBot");
