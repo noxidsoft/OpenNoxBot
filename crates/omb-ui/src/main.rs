@@ -1,46 +1,23 @@
 mod api;
 mod api_keys;
+mod chat;
 mod engines;
+mod settings;
 
-use api_keys::ApiKeys;
-use engines::Engines;
+use chat::Chat;
 use leptos::prelude::*;
-
-#[derive(Clone, Copy, PartialEq)]
-enum Page {
-    Engines,
-    ApiKeys,
-}
+use settings::Settings;
 
 #[component]
 fn App() -> impl IntoView {
-    let (page, set_page) = signal(Page::Engines);
-    let item = move |target: Page, name: &'static str| {
-        view! {
-            <button
-                class:active=move || page.get() == target
-                aria-current=move || (page.get() == target).then_some("page")
-                on:click=move |_| set_page.set(target)
-            >
-                {name}
-            </button>
-        }
-    };
-
+    let (settings_open, set_settings_open) = signal(false);
     view! {
-        <div class="settings">
-            <nav>
-                <h2>"Settings"</h2>
-                {item(Page::Engines, "Engines")}
-                {item(Page::ApiKeys, "API keys")}
-            </nav>
-            <main>
-                {move || match page.get() {
-                    Page::Engines => view! { <Engines /> }.into_any(),
-                    Page::ApiKeys => view! { <ApiKeys /> }.into_any(),
-                }}
-            </main>
+        <div class="pane" class:hidden=move || settings_open.get()>
+            <Chat open_settings=move |_| set_settings_open.set(true) />
         </div>
+        <Show when=move || settings_open.get()>
+            <Settings close=move |_| set_settings_open.set(false) />
+        </Show>
     }
 }
 

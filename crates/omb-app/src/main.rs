@@ -1,30 +1,9 @@
-use omb_core::secrets::{self, Secret};
+mod commands;
 
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn detect_engines() -> Vec<omb_wire::EngineStatus> {
-    let mut host = omb_drivers::Host::from_process();
-    host.jev_api_key = blocking(|| secrets::is_saved(Secret::Jev)).await.unwrap_or(false);
-    omb_drivers::detect_all(&host).await
-}
-
-#[tauri::command]
-async fn jev_key_saved() -> Result<bool, String> {
-    blocking(|| secrets::is_saved(Secret::Jev)).await
-}
-
-#[tauri::command]
-async fn save_jev_key(key: String) -> Result<(), String> {
-    blocking(move || secrets::save(Secret::Jev, &key)).await
-}
-
-#[tauri::command]
-async fn clear_jev_key() -> Result<(), String> {
-    blocking(|| secrets::clear(Secret::Jev)).await
-}
+use commands::AppState;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
 fn main() {
     // WebKitGTK aborts with a Wayland protocol error when its DMABUF renderer is on for some GPU/compositor pairs.
@@ -35,7 +14,30 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![detect_engines, jev_key_saved, save_jev_key, clear_jev_key])
+        .setup(|app| {
+            let data = match std::env::var_os("OPENNOXBOT_DATA") {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => app.path().app_data_dir()?,
+            };
+            std::fs::create_dir_all(&data)?;
+            let store = Arc::new(omb_core::store::Store::open(&data.join("opennoxbot.db"))?);
+            app.manage(AppState { store, data, running: Mutex::new(HashSet::new()) });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::detect_engines,
+            commands::jev_key_saved,
+            commands::save_jev_key,
+            commands::clear_jev_key,
+            commands::list_bots,
+            commands::create_bot,
+            commands::delete_bot,
+            commands::set_bot_approval,
+            commands::set_bot_model,
+            commands::list_messages,
+            commands::running_bots,
+            commands::send_message,
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenNoxBot");
 }

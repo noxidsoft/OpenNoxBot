@@ -3051,6 +3051,7 @@ dependencies = [
  "omb-wire",
  "tauri",
  "tauri-build",
+ "tokio",
 ]
 
 [[package]]
@@ -3078,10 +3079,12 @@ dependencies = [
 name = "omb-ui"
 version = "0.0.1"
 dependencies = [
+ "js-sys",
  "leptos",
  "omb-wire",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

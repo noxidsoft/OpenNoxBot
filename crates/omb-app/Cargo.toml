@@ -13,3 +13,4 @@ tauri = { version = "2", features = [] }
 omb-core.workspace = true
 omb-drivers = { path = "../omb-drivers" }
 omb-wire.workspace = true
+tokio = { version = "1", features = ["sync"] }

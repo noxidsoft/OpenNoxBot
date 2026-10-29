@@ -40,7 +40,7 @@ impl Host {
         }
     }
 
-    pub(crate) fn resolve(&self, name: &str) -> Option<PathBuf> {
+    pub fn resolve(&self, name: &str) -> Option<PathBuf> {
         std::env::split_paths(&self.path).map(|dir| dir.join(name)).find(|p| is_executable(p))
     }
 }
