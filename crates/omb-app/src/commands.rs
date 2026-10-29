@@ -97,6 +97,9 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, bot_id: i64, tex
         return Err("Write a message first".into());
     }
     let bot = state.store.bot(bot_id)?.ok_or("This bot no longer exists")?;
+    if let Some(reason) = state.store.over_limit()? {
+        return Err(reason);
+    }
     if !state.running.lock().map_err(|e| e.to_string())?.insert(bot_id) {
         return Err("This bot is still answering".into());
     }
@@ -316,4 +319,14 @@ pub async fn test_email(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 pub fn usage_report(state: State<'_, AppState>, period: omb_wire::UsagePeriod) -> Result<omb_wire::UsageReport, String> {
     state.store.usage(period, 50)
+}
+
+#[tauri::command]
+pub fn spend_limits(state: State<'_, AppState>) -> Result<omb_wire::SpendLimits, String> {
+    state.store.spend_limits()
+}
+
+#[tauri::command]
+pub fn set_spend_limits(state: State<'_, AppState>, limits: omb_wire::SpendLimits) -> Result<(), String> {
+    state.store.set_spend_limits(limits)
 }

@@ -1,4 +1,4 @@
-use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EmailSettings, EngineId, HostPolicy, MessageRole, ModelCost, NewHost, RunRecord, UsagePeriod, UsageReport, UsageRow, UsageTotals, SshHost, SshLogEntry, SshOutcome, ToolCall};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EmailSettings, EngineId, HostPolicy, MessageRole, ModelCost, NewHost, RunRecord, SpendLimits, UsagePeriod, UsageReport, UsageRow, UsageTotals, SshHost, SshLogEntry, SshOutcome, ToolCall};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -118,6 +118,11 @@ impl Store {
                  steps INTEGER NOT NULL,
                  tools INTEGER NOT NULL,
                  error INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS limits (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 day REAL,
+                 month REAL
              );
              CREATE TABLE IF NOT EXISTS run_models (
                  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -289,6 +294,33 @@ impl Store {
         Ok(())
     }
 
+    pub fn spend_limits(&self) -> Result<SpendLimits, String> {
+        let found = self
+            .conn()
+            .query_row("SELECT day, month FROM limits WHERE id = 1", [], |row| Ok(SpendLimits { day: row.get(0)?, month: row.get(1)? }))
+            .optional()
+            .map_err(failed)?;
+        Ok(found.unwrap_or_default())
+    }
+
+    pub fn set_spend_limits(&self, limits: SpendLimits) -> Result<(), String> {
+        limits.validate()?;
+        self.conn().execute("INSERT OR REPLACE INTO limits (id, day, month) VALUES (1, ?1, ?2)", params![limits.day, limits.month]).map(|_| ()).map_err(failed)
+    }
+
+    /// Why a new turn may not start, if spending has reached a cap.
+    pub fn over_limit(&self) -> Result<Option<String>, String> {
+        let limits = self.spend_limits()?;
+        for (cap, period, name) in [(limits.day, UsagePeriod::Day, "24-hour"), (limits.month, UsagePeriod::Month, "30-day")] {
+            let Some(cap) = cap else { continue };
+            let spent = self.usage(period, 0)?.totals.cost_usd;
+            if spent >= cap {
+                return Ok(Some(format!("The {name} spend limit of ${cap:.2} is reached (${spent:.2} spent). Raise it in Settings → Usage.")));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn usage(&self, period: UsagePeriod, runs: u32) -> Result<UsageReport, String> {
         let since = period.seconds().map_or(0, |window| now() - window);
         let conn = self.conn();
@@ -449,6 +481,28 @@ mod tests {
         store.conn().execute("UPDATE runs SET at = at - 40 * 86400", []).unwrap();
         assert_eq!(store.usage(UsagePeriod::Month, 10).unwrap().totals, UsageTotals::default());
         assert_eq!(store.usage(UsagePeriod::All, 10).unwrap().runs.len(), 3);
+    }
+
+    #[test]
+    fn a_reached_cap_blocks_new_turns_until_it_is_raised_or_cleared() {
+        let store = Store::in_memory().unwrap();
+        let spend = |cost| {
+            store
+                .record_run(&NewRun { bot_name: "A".into(), title: "t".into(), millis: 1, cost_usd: cost, tokens: 1, steps: 1, tools: 0, error: false, models: vec![] })
+                .unwrap()
+        };
+        assert_eq!(store.over_limit().unwrap(), None, "no cap, no block");
+        spend(1.0);
+        store.set_spend_limits(SpendLimits { day: Some(1.5), month: Some(10.0) }).unwrap();
+        assert_eq!(store.over_limit().unwrap(), None);
+        spend(0.5);
+        assert!(store.over_limit().unwrap().unwrap().contains("24-hour spend limit of $1.50"));
+        store.set_spend_limits(SpendLimits { day: None, month: Some(1.5) }).unwrap();
+        assert!(store.over_limit().unwrap().unwrap().contains("30-day"));
+        store.set_spend_limits(SpendLimits::default()).unwrap();
+        assert_eq!(store.over_limit().unwrap(), None);
+        assert!(store.set_spend_limits(SpendLimits { day: Some(-1.0), month: None }).is_err());
+        assert!(store.set_spend_limits(SpendLimits { day: Some(f64::NAN), month: None }).is_err());
     }
 
     #[test]

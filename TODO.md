@@ -4,7 +4,7 @@
 Done: chat, engines and settings; approvals; guarded SSH; email connection (user-tested).
 Guardrails come first: nothing runs unattended until approvals, limits and logs are solid.
 
-5. **Usage and costs** (recording and Settings → Usage done, user-tested; spend limits, CSV export and provider allowances still to do): record cost and tokens per turn (the CLI already reports `total_cost_usd`), per-bot and per-day totals, Settings → Usage, spend limits that stop a bot. Everything below leans on this.
+5. **Usage and costs** (recording and Settings → Usage done, user-tested; spend limits (global 24-hour and 30-day caps built, awaiting UAT), CSV export and provider allowances still to do): record cost and tokens per turn (the CLI already reports `total_cost_usd`), per-bot and per-day totals, Settings → Usage, Everything below leans on this.
 6. **Attachments and goals**: attach images and files to a message; a Goal button that keeps a bot working toward an outcome with turn, time and cost limits.
 7. **Chief and workers**: delegation tools, task tree with depth/concurrency/cost limits, roles, Team Map view.
 8. **Jev model selection**: route each task to a model by difficulty and cost (needs the Jev endpoint and the Decision and extraction settings).

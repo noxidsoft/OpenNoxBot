@@ -111,3 +111,5 @@ h2 { font-size: 1rem; margin: 28px 0 12px; }
 .runs li strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .runs li[data-error="true"] { border-color: #d14343; }
 .runs li b { text-align: right; font-weight: 500; }
+.limits { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+.limits input { min-width: 0; }

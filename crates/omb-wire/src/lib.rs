@@ -284,6 +284,22 @@ pub struct RunRecord {
     pub error: bool,
 }
 
+/// Dollar caps over the rolling 24-hour and 30-day windows; `None` is no cap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpendLimits {
+    pub day: Option<f64>,
+    pub month: Option<f64>,
+}
+
+impl SpendLimits {
+    pub fn validate(&self) -> Result<(), String> {
+        if [self.day, self.month].into_iter().flatten().any(|amount| !amount.is_finite() || amount < 0.0) {
+            return Err("Enter an amount of zero or more".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageReport {
     pub totals: UsageTotals,

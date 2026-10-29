@@ -1,12 +1,24 @@
 use crate::api::call;
 use leptos::prelude::*;
-use omb_wire::{UsagePeriod, UsageReport, UsageRow};
+use omb_wire::{SpendLimits, UsagePeriod, UsageReport, UsageRow};
 use serde::Serialize;
 use wasm_bindgen::JsValue;
 
 #[derive(Serialize)]
 struct Period {
     period: UsagePeriod,
+}
+
+#[derive(Serialize)]
+struct Limits {
+    limits: SpendLimits,
+}
+
+fn amount(text: &str) -> Result<Option<f64>, String> {
+    match text.trim().trim_start_matches('$') {
+        "" => Ok(None),
+        number => number.parse::<f64>().map(Some).map_err(|_| "Enter an amount like 5 or 2.50".to_owned()),
+    }
 }
 
 const PERIODS: [(UsagePeriod, &str, &str); 4] = [
@@ -83,6 +95,32 @@ pub fn Usage() -> impl IntoView {
         });
     });
 
+    let (day_cap, month_cap) = (RwSignal::new(String::new()), RwSignal::new(String::new()));
+    let saved = RwSignal::new(false);
+    leptos::task::spawn_local(async move {
+        if let Ok(found) = call::<SpendLimits>("spend_limits", ()).await {
+            day_cap.set(found.day.map(|d| d.to_string()).unwrap_or_default());
+            month_cap.set(found.month.map(|m| m.to_string()).unwrap_or_default());
+        }
+    });
+    let save_limits = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let parsed = amount(&day_cap.get_untracked()).and_then(|day| Ok(SpendLimits { day, month: amount(&month_cap.get_untracked())? }));
+        leptos::task::spawn_local(async move {
+            let result = match parsed {
+                Ok(limits) => call::<()>("set_spend_limits", Limits { limits }).await,
+                Err(message) => Err(message),
+            };
+            match result {
+                Ok(()) => {
+                    failure.set(None);
+                    saved.set(true);
+                }
+                Err(message) => failure.set(Some(message)),
+            }
+        });
+    };
+
     let change = move |ev: leptos::ev::Event| {
         let key = event_target_value(&ev);
         if let Some((chosen, _, _)) = PERIODS.iter().find(|(_, k, _)| *k == key) {
@@ -115,6 +153,12 @@ pub fn Usage() -> impl IntoView {
             let current = report.get();
             view! { <div class="where">{bars("Bot", current.by_bot)}{bars("Model", current.by_model)}</div> }
         }}
+        <h2>"Spend limits"</h2>
+        <form class="limits" on:submit=save_limits>
+            <input aria-label="24-hour limit" placeholder="24 hours: no limit" inputmode="decimal" autocomplete="off" prop:value=day_cap on:input=move |ev| { saved.set(false); day_cap.set(event_target_value(&ev)) } />
+            <input aria-label="30-day limit" placeholder="30 days: no limit" inputmode="decimal" autocomplete="off" prop:value=month_cap on:input=move |ev| { saved.set(false); month_cap.set(event_target_value(&ev)) } />
+            <button type="submit">{move || if saved.get() { "Saved" } else { "Save" }}</button>
+        </form>
         <h2>"Runs"</h2>
         <ul class="runs">
             <For
