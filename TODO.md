@@ -1,12 +1,20 @@
 # To do
 
 ## Roadmap
-1. ~~Chat, engine detection, settings~~
-2. ~~Approvals: permission server, approval cards, own-folder reads~~
-3. Guarded SSH: host registry, pinned host keys, per-host policy, audit log, `ssh_exec` tool
-4. MCP connections: ~~custom email~~ (awaiting UAT), then Stripe, Xero, Google Sheets
-5. Chief bot and role workers: delegation tools, task tree, depth/concurrency/cost limits, team map
-6. Automations: cron with timezones, cheap checks, run history; headless-capable core
+Done: chat, engines and settings; approvals; guarded SSH; email connection (user-tested).
+Guardrails come first: nothing runs unattended until approvals, limits and logs are solid.
+
+5. **Usage and costs**: record cost and tokens per turn (the CLI already reports `total_cost_usd`), per-bot and per-day totals, Settings → Usage, spend limits that stop a bot. Everything below leans on this.
+6. **Attachments and goals**: attach images and files to a message; a Goal button that keeps a bot working toward an outcome with turn, time and cost limits.
+7. **Chief and workers**: delegation tools, task tree with depth/concurrency/cost limits, roles, Team Map view.
+8. **Jev model selection**: route each task to a model by difficulty and cost (needs the Jev endpoint and the Decision and extraction settings).
+9. **Automations and schedules**: cron with timezones, cheap code checks before any model turn, run history, pause/resume; headless-capable core.
+10. **Logging in the UI**: one activity log across turns, tool calls, approvals, SSH, email and automation runs, filterable.
+11. **Browser visuals and data view**: bots show pages and results visually; tables and charts for data.
+12. **MCP connections (parked)**: generic stdio/http registry for Stripe, Xero, Google Sheets; research each one's sign-in first. Send-like tools always ask.
+13. **Inbox bot**: see Later.
+
+Reference screenshots for each area are in `~/Programs/screenshots-OpenNoxBot/` (usage, automations, team map, attach and goal buttons, decision and extraction, bot desktops, backup, import, remote access, servers).
 
 ## Soon
 - Desktop notification when a bot is waiting on an approval
