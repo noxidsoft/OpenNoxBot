@@ -2,6 +2,7 @@ use crate::api_keys::ApiKeys;
 use crate::connections::Connections;
 use crate::engines::Engines;
 use crate::hosts::Hosts;
+use crate::usage::Usage;
 use leptos::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -10,6 +11,7 @@ enum Page {
     ApiKeys,
     Hosts,
     Connections,
+    Usage,
 }
 
 #[component]
@@ -36,6 +38,7 @@ pub fn Settings(#[prop(into)] close: Callback<()>) -> impl IntoView {
                 {item(Page::Hosts, "Hosts")}
                 {item(Page::Connections, "Connections")}
                 {item(Page::ApiKeys, "API keys")}
+                {item(Page::Usage, "Usage")}
             </nav>
             <main>
                 {move || match page.get() {
@@ -43,6 +46,7 @@ pub fn Settings(#[prop(into)] close: Callback<()>) -> impl IntoView {
                     Page::Hosts => view! { <Hosts /> }.into_any(),
                     Page::Connections => view! { <Connections /> }.into_any(),
                     Page::ApiKeys => view! { <ApiKeys /> }.into_any(),
+                    Page::Usage => view! { <Usage /> }.into_any(),
                 }}
             </main>
         </div>

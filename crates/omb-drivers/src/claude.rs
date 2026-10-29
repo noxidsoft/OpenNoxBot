@@ -1,6 +1,6 @@
 use crate::host::Host;
 use omb_core::proc::spawn;
-use omb_wire::{ApprovalMode, RuntimeEvent};
+use omb_wire::{ApprovalMode, ModelCost, RuntimeEvent, TurnUsage};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
@@ -157,10 +157,24 @@ fn parse_frame(line: &str, state: &mut Parse) -> Vec<RuntimeEvent> {
         Some("result") => vec![RuntimeEvent::TurnCompleted {
             is_error: frame["is_error"] == true,
             result: frame["result"].as_str().map(str::to_owned),
-            cost_usd: frame["total_cost_usd"].as_f64(),
+            usage: usage_of(&frame),
         }],
         _ => Vec::new(),
     }
+}
+
+fn usage_of(frame: &Value) -> Option<TurnUsage> {
+    let cost_usd = frame["total_cost_usd"].as_f64()?;
+    let counts = &frame["usage"];
+    let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().filter_map(|key| counts[key].as_u64()).sum();
+    let mut models: Vec<ModelCost> = frame["modelUsage"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(model, used)| Some(ModelCost { model: model.clone(), cost_usd: used["costUSD"].as_f64()? }))
+        .collect();
+    models.sort_by(|a, b| a.model.cmp(&b.model));
+    Some(TurnUsage { cost_usd, tokens, steps: frame["num_turns"].as_u64().unwrap_or(0) as u32, models })
 }
 
 fn blocks(frame: &Value) -> impl Iterator<Item = &Value> {
@@ -185,7 +199,7 @@ mod tests {
     const DELTA_HEL: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#;
     const DELTA_LO: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}"#;
     const ASSISTANT_HELLO: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}"#;
-    const RESULT: &str = r#"{"type":"result","is_error":false,"result":"Hello","total_cost_usd":0.01}"#;
+    const RESULT: &str = r#"{"type":"result","is_error":false,"result":"Hello","total_cost_usd":0.01,"num_turns":2,"usage":{"input_tokens":2,"output_tokens":3,"cache_creation_input_tokens":10,"cache_read_input_tokens":5},"modelUsage":{"claude-haiku-5-5":{"costUSD":0.01}}}"#;
 
     async fn play(frames: &[&str], approval: ApprovalMode, model: Option<&str>, resume: Option<&str>) -> (Option<String>, Vec<RuntimeEvent>, std::path::PathBuf) {
         play_with(frames, approval, model, resume, None).await
@@ -225,7 +239,7 @@ mod tests {
                 RuntimeEvent::TurnStarted { session_id: "s1".into(), model: Some("m1".into()) },
                 RuntimeEvent::ContentDelta { text: "Hel".into() },
                 RuntimeEvent::ContentDelta { text: "lo".into() },
-                RuntimeEvent::TurnCompleted { is_error: false, result: Some("Hello".into()), cost_usd: Some(0.01) },
+                RuntimeEvent::TurnCompleted { is_error: false, result: Some("Hello".into()), usage: Some(TurnUsage { cost_usd: 0.01, tokens: 20, steps: 2, models: vec![ModelCost { model: "claude-haiku-5-5".into(), cost_usd: 0.01 }] }) },
             ]
         );
     }

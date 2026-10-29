@@ -5,6 +5,7 @@ mod connections;
 mod engines;
 mod hosts;
 mod settings;
+mod usage;
 
 use chat::Chat;
 use leptos::prelude::*;

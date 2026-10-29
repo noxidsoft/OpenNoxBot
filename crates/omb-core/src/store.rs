@@ -1,8 +1,21 @@
-use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EmailSettings, EngineId, HostPolicy, MessageRole, NewHost, SshHost, SshLogEntry, SshOutcome, ToolCall};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EmailSettings, EngineId, HostPolicy, MessageRole, ModelCost, NewHost, RunRecord, UsagePeriod, UsageReport, UsageRow, UsageTotals, SshHost, SshLogEntry, SshOutcome, ToolCall};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// One finished turn, as the recorder saw it.
+pub struct NewRun {
+    pub bot_name: String,
+    pub title: String,
+    pub millis: u64,
+    pub cost_usd: f64,
+    pub tokens: u64,
+    pub steps: u32,
+    pub tools: u32,
+    pub error: bool,
+    pub models: Vec<ModelCost>,
+}
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -43,6 +56,10 @@ fn log_of(row: &Row) -> rusqlite::Result<SshLogEntry> {
         exit_code: row.get(6)?,
         millis: row.get(7)?,
     })
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
 }
 
 fn failed(error: rusqlite::Error) -> String {
@@ -89,6 +106,23 @@ impl Store {
                  user TEXT NOT NULL,
                  host TEXT NOT NULL,
                  port INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS runs (
+                 id INTEGER PRIMARY KEY,
+                 at INTEGER NOT NULL,
+                 bot_name TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 millis INTEGER NOT NULL,
+                 cost REAL NOT NULL,
+                 tokens INTEGER NOT NULL,
+                 steps INTEGER NOT NULL,
+                 tools INTEGER NOT NULL,
+                 error INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS run_models (
+                 run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                 model TEXT NOT NULL,
+                 cost REAL NOT NULL
              );
              CREATE TABLE IF NOT EXISTS ssh_log (
                  id INTEGER PRIMARY KEY,
@@ -240,6 +274,50 @@ impl Store {
         self.conn().execute("UPDATE hosts SET policy = ?2 WHERE id = ?1", params![id, text_of(policy)]).map(|_| ()).map_err(failed)
     }
 
+    pub fn record_run(&self, run: &NewRun) -> Result<(), String> {
+        let at = now();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO runs (at, bot_name, title, millis, cost, tokens, steps, tools, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![at, run.bot_name, run.title, run.millis as i64, run.cost_usd, run.tokens as i64, run.steps, run.tools, run.error],
+        )
+        .map_err(failed)?;
+        let id = conn.last_insert_rowid();
+        for model in &run.models {
+            conn.execute("INSERT INTO run_models (run_id, model, cost) VALUES (?1, ?2, ?3)", params![id, model.model, model.cost_usd]).map_err(failed)?;
+        }
+        Ok(())
+    }
+
+    pub fn usage(&self, period: UsagePeriod, runs: u32) -> Result<UsageReport, String> {
+        let since = period.seconds().map_or(0, |window| now() - window);
+        let conn = self.conn();
+        let totals = conn
+            .query_row(
+                "SELECT COALESCE(SUM(millis), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(tokens), 0), COALESCE(SUM(steps), 0), COALESCE(SUM(tools), 0), COALESCE(SUM(error), 0) FROM runs WHERE at >= ?1",
+                [since],
+                |row| Ok(UsageTotals { millis: row.get::<_, i64>(0)? as u64, cost_usd: row.get(1)?, tokens: row.get::<_, i64>(2)? as u64, steps: row.get::<_, i64>(3)? as u64, tools: row.get::<_, i64>(4)? as u64, errors: row.get::<_, i64>(5)? as u64 }),
+            )
+            .map_err(failed)?;
+        let rows = |sql: &str| -> Result<Vec<UsageRow>, String> {
+            let mut statement = conn.prepare(sql).map_err(failed)?;
+            statement.query_map([since], |row| Ok(UsageRow { label: row.get(0)?, cost_usd: row.get(1)? })).map_err(failed)?.collect::<Result<_, _>>().map_err(failed)
+        };
+        let by_bot = rows("SELECT bot_name, SUM(cost) AS total FROM runs WHERE at >= ?1 GROUP BY bot_name ORDER BY total DESC")?;
+        let by_model = rows("SELECT model, SUM(m.cost) AS total FROM run_models m JOIN runs r ON r.id = m.run_id WHERE r.at >= ?1 GROUP BY model ORDER BY total DESC")?;
+        let mut statement = conn
+            .prepare("SELECT id, at, bot_name, title, millis, cost, error FROM runs WHERE at >= ?1 ORDER BY id DESC LIMIT ?2")
+            .map_err(failed)?;
+        let runs = statement
+            .query_map(params![since, runs], |row| {
+                Ok(RunRecord { id: row.get(0)?, at: row.get(1)?, bot: row.get(2)?, title: row.get(3)?, millis: row.get::<_, i64>(4)? as u64, cost_usd: row.get(5)?, error: row.get(6)? })
+            })
+            .map_err(failed)?
+            .collect::<Result<_, _>>()
+            .map_err(failed)?;
+        Ok(UsageReport { totals, by_bot, by_model, runs })
+    }
+
     pub fn email(&self) -> Result<Option<EmailSettings>, String> {
         self.conn()
             .query_row("SELECT user, host, port FROM email WHERE id = 1", [], |row| Ok(EmailSettings { user: row.get(0)?, host: row.get(1)?, port: row.get(2)? }))
@@ -343,6 +421,34 @@ mod tests {
         store.expire_unfinished(None, Some("The app closed before this turn finished")).unwrap();
         assert_eq!(of(&b).last().map(|m| (m.role, m.body.as_str())), Some((MessageRole::Error, "The app closed before this turn finished")));
         assert_eq!(of(&a).len(), 3, "a was already closed out, so it gets no note");
+    }
+
+    #[test]
+    fn runs_add_up_by_bot_and_model_within_the_period() {
+        let store = Store::in_memory().unwrap();
+        let run = |bot: &str, cost: f64, model: &str, error| NewRun {
+            bot_name: bot.into(),
+            title: "t".into(),
+            millis: 1000,
+            cost_usd: cost,
+            tokens: 100,
+            steps: 2,
+            tools: 1,
+            error,
+            models: vec![ModelCost { model: model.into(), cost_usd: cost }],
+        };
+        store.record_run(&run("A", 1.5, "sonnet", false)).unwrap();
+        store.record_run(&run("B", 0.25, "haiku", true)).unwrap();
+        store.record_run(&run("A", 0.5, "sonnet", false)).unwrap();
+        let report = store.usage(UsagePeriod::Day, 2).unwrap();
+        assert_eq!((report.totals.cost_usd, report.totals.tokens, report.totals.tools, report.totals.errors, report.totals.millis), (2.25, 300, 3, 1, 3000));
+        assert_eq!(report.by_bot.iter().map(|r| (r.label.as_str(), r.cost_usd)).collect::<Vec<_>>(), [("A", 2.0), ("B", 0.25)]);
+        assert_eq!(report.by_model.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["sonnet", "haiku"]);
+        assert_eq!(report.runs.len(), 2);
+        assert_eq!(report.runs[0].cost_usd, 0.5, "newest first");
+        store.conn().execute("UPDATE runs SET at = at - 40 * 86400", []).unwrap();
+        assert_eq!(store.usage(UsagePeriod::Month, 10).unwrap().totals, UsageTotals::default());
+        assert_eq!(store.usage(UsagePeriod::All, 10).unwrap().runs.len(), 3);
     }
 
     #[test]

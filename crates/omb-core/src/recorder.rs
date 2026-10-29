@@ -1,5 +1,5 @@
-use crate::store::Store;
-use omb_wire::{ApprovalRequest, ApprovalState, MessageRole, RuntimeEvent, ToolCall};
+use crate::store::{NewRun, Store};
+use omb_wire::{ApprovalRequest, ApprovalState, MessageRole, RuntimeEvent, ToolCall, TurnUsage};
 use std::collections::HashMap;
 
 /// Persists one turn's events: assistant text and each tool call become messages, in the order they happened.
@@ -9,11 +9,15 @@ pub struct TurnRecorder<'a> {
     text: String,
     tools: HashMap<String, (i64, ToolCall)>,
     requests: HashMap<String, (i64, ApprovalRequest)>,
+    started: std::time::Instant,
+    tool_uses: u32,
+    usage: Option<TurnUsage>,
+    failed: bool,
 }
 
 impl<'a> TurnRecorder<'a> {
     pub fn new(store: &'a Store, bot_id: i64) -> Self {
-        Self { store, bot_id, text: String::new(), tools: HashMap::new(), requests: HashMap::new() }
+        Self { store, bot_id, text: String::new(), tools: HashMap::new(), requests: HashMap::new(), started: std::time::Instant::now(), tool_uses: 0, usage: None, failed: false }
     }
 
     pub fn apply(&mut self, event: &RuntimeEvent) -> Result<(), String> {
@@ -26,6 +30,7 @@ impl<'a> TurnRecorder<'a> {
             }
             RuntimeEvent::ItemStarted { id, name, input } => {
                 self.flush_text()?;
+                self.tool_uses += 1;
                 let call = ToolCall { name: name.clone(), input: input.clone(), ok: None, output: String::new() };
                 let message = self.store.add_message(self.bot_id, MessageRole::Tool, &body_of(&call))?;
                 self.tools.insert(id.clone(), (message.id, call));
@@ -53,8 +58,10 @@ impl<'a> TurnRecorder<'a> {
                 }
                 None => Ok(()),
             },
-            RuntimeEvent::TurnCompleted { is_error, result, .. } => {
+            RuntimeEvent::TurnCompleted { is_error, result, usage } => {
                 self.flush_text()?;
+                self.usage = usage.clone();
+                self.failed |= *is_error;
                 if *is_error {
                     let said = result.as_deref().filter(|r| !r.is_empty()).unwrap_or("The turn failed");
                     self.store.add_message(self.bot_id, MessageRole::Error, said)?;
@@ -63,9 +70,31 @@ impl<'a> TurnRecorder<'a> {
             }
             RuntimeEvent::RuntimeError { message } => {
                 self.flush_text()?;
+                self.failed = true;
                 self.store.add_message(self.bot_id, MessageRole::Error, message).map(|_| ())
             }
         }
+    }
+
+    /// Saves what the turn cost. Call once the turn is over; a turn that reported nothing and did not fail is not a run.
+    pub fn finish(&self, prompt: &str) -> Result<(), String> {
+        if self.usage.is_none() && !self.failed {
+            return Ok(());
+        }
+        let bot_name = self.store.bot(self.bot_id)?.map(|bot| bot.name).unwrap_or_default();
+        let title: String = prompt.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+        let usage = self.usage.clone();
+        self.store.record_run(&NewRun {
+            bot_name,
+            title,
+            millis: self.started.elapsed().as_millis() as u64,
+            cost_usd: usage.as_ref().map_or(0.0, |u| u.cost_usd),
+            tokens: usage.as_ref().map_or(0, |u| u.tokens),
+            steps: usage.as_ref().map_or(0, |u| u.steps),
+            tools: self.tool_uses,
+            error: self.failed,
+            models: usage.map(|u| u.models).unwrap_or_default(),
+        })
     }
 
     fn flush_text(&mut self) -> Result<(), String> {
@@ -104,7 +133,7 @@ mod tests {
     }
 
     fn done() -> RuntimeEvent {
-        RuntimeEvent::TurnCompleted { is_error: false, result: None, cost_usd: None }
+        RuntimeEvent::TurnCompleted { is_error: false, result: None, usage: None }
     }
 
     #[test]
@@ -138,7 +167,7 @@ mod tests {
     fn failures_are_recorded_as_errors_after_any_partial_text() {
         let (_, _, messages) = record(&[delta("half"), RuntimeEvent::RuntimeError { message: "boom".into() }]);
         assert_eq!(messages.iter().map(|m| (m.role, m.body.as_str())).collect::<Vec<_>>(), [(MessageRole::Assistant, "half"), (MessageRole::Error, "boom")]);
-        let (_, _, messages) = record(&[RuntimeEvent::TurnCompleted { is_error: true, result: Some("limit reached".into()), cost_usd: None }]);
+        let (_, _, messages) = record(&[RuntimeEvent::TurnCompleted { is_error: true, result: Some("limit reached".into()), usage: None }]);
         assert_eq!((messages[0].role, messages[0].body.as_str()), (MessageRole::Error, "limit reached"));
     }
 
@@ -155,6 +184,26 @@ mod tests {
         recorder.apply(&RuntimeEvent::RequestResolved { request_id: "r1".into(), allowed: true }).unwrap();
         let last = store.messages(bot).unwrap().pop().unwrap();
         assert_eq!(serde_json::from_str::<ApprovalRequest>(&last.body).unwrap().state, ApprovalState::Allowed);
+    }
+
+    #[test]
+    fn a_finished_turn_is_recorded_as_a_run_with_its_tool_count_and_failures() {
+        let store = Store::in_memory().unwrap();
+        let bot = store.create_bot("A", EngineId::Claude, None, ApprovalMode::Ask).unwrap();
+        let usage = TurnUsage { cost_usd: 0.5, tokens: 10, steps: 3, models: vec![omb_wire::ModelCost { model: "m".into(), cost_usd: 0.5 }] };
+        let mut recorder = TurnRecorder::new(&store, bot.id);
+        recorder.apply(&RuntimeEvent::ItemStarted { id: "t".into(), name: "Bash".into(), input: json!({}) }).unwrap();
+        recorder.apply(&RuntimeEvent::TurnCompleted { is_error: false, result: None, usage: Some(usage) }).unwrap();
+        recorder.finish("  do   the\nthing ").unwrap();
+        TurnRecorder::new(&store, bot.id).finish("ignored: nothing happened").unwrap();
+        let mut failing = TurnRecorder::new(&store, bot.id);
+        failing.apply(&RuntimeEvent::RuntimeError { message: "x".into() }).unwrap();
+        failing.finish("broken").unwrap();
+        let report = store.usage(omb_wire::UsagePeriod::All, 10).unwrap();
+        assert_eq!(report.runs.len(), 2);
+        assert_eq!((report.runs[1].bot.as_str(), report.runs[1].title.as_str(), report.runs[1].cost_usd, report.runs[1].error), ("A", "do the thing", 0.5, false));
+        assert!(report.runs[0].error);
+        assert_eq!((report.totals.tools, report.totals.steps, report.totals.errors), (1, 3, 1));
     }
 
     #[test]

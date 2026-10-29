@@ -221,6 +221,78 @@ pub struct BotEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelCost {
+    pub model: String,
+    pub cost_usd: f64,
+}
+
+/// What one finished turn used, as the engine reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnUsage {
+    pub cost_usd: f64,
+    /// Input, output and cached tokens together.
+    pub tokens: u64,
+    pub steps: u32,
+    pub models: Vec<ModelCost>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsagePeriod {
+    Day,
+    Week,
+    Month,
+    All,
+}
+
+impl UsagePeriod {
+    /// How far back the period reaches, as a rolling window; `None` is everything.
+    pub fn seconds(self) -> Option<i64> {
+        match self {
+            UsagePeriod::Day => Some(86_400),
+            UsagePeriod::Week => Some(7 * 86_400),
+            UsagePeriod::Month => Some(30 * 86_400),
+            UsagePeriod::All => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageTotals {
+    pub millis: u64,
+    pub cost_usd: f64,
+    pub tokens: u64,
+    pub steps: u64,
+    pub tools: u64,
+    pub errors: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageRow {
+    pub label: String,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub id: i64,
+    pub at: i64,
+    pub bot: String,
+    pub title: String,
+    pub millis: u64,
+    pub cost_usd: f64,
+    pub error: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageReport {
+    pub totals: UsageTotals,
+    pub by_bot: Vec<UsageRow>,
+    pub by_model: Vec<UsageRow>,
+    pub runs: Vec<RunRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RuntimeEvent {
     #[serde(rename = "turn.started")]
@@ -236,7 +308,7 @@ pub enum RuntimeEvent {
     #[serde(rename = "request.resolved")]
     RequestResolved { request_id: String, allowed: bool },
     #[serde(rename = "turn.completed")]
-    TurnCompleted { is_error: bool, result: Option<String>, cost_usd: Option<f64> },
+    TurnCompleted { is_error: bool, result: Option<String>, usage: Option<TurnUsage> },
     #[serde(rename = "runtime.error")]
     RuntimeError { message: String },
 }

@@ -166,6 +166,7 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: 
         emit(event);
     }
     let _ = driver.await;
+    let _ = recorder.finish(text);
     let _ = std::fs::remove_file(&config);
     let _ = store.expire_unfinished(Some(bot.id), None);
 }
@@ -310,4 +311,9 @@ pub async fn test_email(state: State<'_, AppState>) -> Result<String, String> {
         Ok(done) => done.map_err(|e| e.to_string())?,
         Err(_) => Err("The mail server did not answer".into()),
     }
+}
+
+#[tauri::command]
+pub fn usage_report(state: State<'_, AppState>, period: omb_wire::UsagePeriod) -> Result<omb_wire::UsageReport, String> {
+    state.store.usage(period, 50)
 }

@@ -57,6 +57,7 @@ fn main() {
             commands::save_email,
             commands::remove_email,
             commands::test_email,
+            commands::usage_report,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenNoxBot");
