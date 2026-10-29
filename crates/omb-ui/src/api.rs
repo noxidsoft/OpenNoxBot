@@ -20,7 +20,11 @@ extern "C" {
 }
 
 /// Subscribes for the life of the window.
-pub fn on_event<T: serde::de::DeserializeOwned + 'static>(name: &'static str, mut handler: impl FnMut(T) + 'static) {
+pub fn on_event<T: serde::de::DeserializeOwned + 'static>(
+    name: &'static str,
+    mut handler: impl FnMut(T) + 'static,
+    on_error: impl FnOnce(String) + 'static,
+) {
     let closure = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
         let payload = js_sys::Reflect::get(&event, &JsValue::from_str("payload")).unwrap_or(JsValue::UNDEFINED);
         if let Ok(value) = serde_wasm_bindgen::from_value::<T>(payload) {
@@ -28,7 +32,9 @@ pub fn on_event<T: serde::de::DeserializeOwned + 'static>(name: &'static str, mu
         }
     });
     leptos::task::spawn_local(async move {
-        let _ = listen(name, &closure).await;
-        closure.forget();
+        match listen(name, &closure).await {
+            Ok(_) => closure.forget(),
+            Err(e) => on_error(format!("Live updates unavailable: {}", e.as_string().unwrap_or_else(|| format!("{e:?}")))),
+        }
     });
 }

@@ -138,7 +138,9 @@ pub fn Chat(#[prop(into)] open_settings: Callback<()>) -> impl IntoView {
         }
     });
 
-    on_event::<BotEvent>("runtime", move |incoming| {
+    on_event::<BotEvent>(
+        "runtime",
+        move |incoming| {
         let is_selected = selected.get_untracked() == Some(incoming.bot_id);
         match &incoming.event {
             RuntimeEvent::ContentDelta { text } => {
@@ -158,7 +160,9 @@ pub fn Chat(#[prop(into)] open_settings: Callback<()>) -> impl IntoView {
                 }
             }
         }
-    });
+        },
+        move |message| failure.set(Some(message)),
+    );
 
     Effect::new(move |_| {
         messages.track();
