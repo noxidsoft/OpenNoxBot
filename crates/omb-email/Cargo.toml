@@ -1,0 +1,13 @@
+[package]
+name = "omb-email"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+imap = { version = "3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+imap-proto = "0.16"
+mail-builder = "2.0.0"
+mail-parser = "1.0.0"
+serde_json.workspace = true
