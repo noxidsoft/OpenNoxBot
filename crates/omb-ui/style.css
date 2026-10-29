@@ -92,3 +92,6 @@ h2 { font-size: 1rem; margin: 28px 0 12px; }
 .activity code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
 .activity li[data-outcome="Ran"] em { color: #2e9e5b; }
 .activity li[data-outcome="Declined"] em, .activity li[data-outcome="Refused"] em, .activity li[data-outcome="Failed"] em { color: #d14343; }
+.email-form { display: grid; grid-template-columns: 1fr 1fr 1fr 6rem auto; gap: 8px; }
+.email-form input { min-width: 0; }
+.email-form button.secondary { grid-row: 2; }

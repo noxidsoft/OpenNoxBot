@@ -94,6 +94,7 @@ pub fn call(mailbox: &mut dyn Mailbox, name: &str, args: &Value) -> Result<Value
                 since: text_arg(args, "since")?,
                 unseen: args["unseen"].as_bool().unwrap_or(false),
             };
+            crate::query::criteria(&search)?;
             let rows = mailbox.search(&folder_arg(args)?, &search, limit)?;
             Ok(json!({
                 "note": untrusted_note(),

@@ -4,9 +4,9 @@ use omb_core::recorder::TurnRecorder;
 use omb_core::secrets::{self, Secret};
 use omb_core::store::Store;
 use omb_drivers::{Host, McpAccess, Turn, run_turn};
-use omb_mcp::{DISALLOWED_TOOLS, McpServer, PERMISSION_TOOL, TurnContext};
+use omb_mcp::{DISALLOWED_TOOLS, McpServer, OpenMailbox, PERMISSION_TOOL, TurnContext};
 use omb_ssh::{ScannedKey, SshRunner};
-use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, EngineId, EngineStatus, HostPolicy, HostStatus, MessageRole, NewHost, RuntimeEvent, SshHost, SshLogEntry};
+use omb_wire::{ApprovalMode, Bot, BotEvent, ChatMessage, EmailSettings, EmailStatus, EngineId, EngineStatus, HostPolicy, HostStatus, MessageRole, NewHost, RuntimeEvent, SshHost, SshLogEntry};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -252,4 +252,61 @@ pub async fn test_host(state: State<'_, AppState>, host_id: i64) -> Result<Strin
 #[tauri::command]
 pub fn ssh_activity(state: State<'_, AppState>, limit: u32) -> Result<Vec<SshLogEntry>, String> {
     state.store.ssh_log(limit.min(200))
+}
+
+/// Reads the saved settings and keyring password each time, so a change in Settings applies to the next tool call.
+pub fn mailbox_opener(store: Arc<Store>) -> OpenMailbox {
+    Arc::new(move || {
+        let settings = store.email()?.ok_or("Email is not set up. The person adds it in Settings → Connections.")?;
+        let password = secrets::read(Secret::EmailPassword)?.ok_or("The mailbox password is missing. The person enters it in Settings → Connections.")?;
+        let config = omb_email::Config { host: settings.host, port: settings.port, user: settings.user.clone(), password };
+        Ok((Box::new(omb_email::ImapMailbox::connect(&config)?) as Box<dyn omb_email::Mailbox + Send>, settings.user))
+    })
+}
+
+#[tauri::command]
+pub async fn email_status(state: State<'_, AppState>) -> Result<EmailStatus, String> {
+    let settings = state.store.email()?;
+    let password_saved = blocking(|| secrets::is_saved(Secret::EmailPassword)).await?;
+    Ok(EmailStatus { settings, password_saved })
+}
+
+/// A blank password keeps the saved one; the first save needs one.
+#[tauri::command]
+pub async fn save_email(state: State<'_, AppState>, settings: EmailSettings, password: Option<String>) -> Result<(), String> {
+    settings.validate()?;
+    let password = password.filter(|p| !p.is_empty());
+    let store = state.store.clone();
+    blocking(move || {
+        match password {
+            Some(password) => secrets::save(Secret::EmailPassword, &password)?,
+            None if !secrets::is_saved(Secret::EmailPassword)? => return Err("Enter the mailbox password".into()),
+            None => {}
+        }
+        store.set_email(&settings)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_email(state: State<'_, AppState>) -> Result<(), String> {
+    let store = state.store.clone();
+    blocking(move || {
+        store.clear_email()?;
+        secrets::clear(Secret::EmailPassword)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn test_email(state: State<'_, AppState>) -> Result<String, String> {
+    let open = mailbox_opener(state.store.clone());
+    let work = tauri::async_runtime::spawn_blocking(move || {
+        let (mut mailbox, _) = open()?;
+        mailbox.list().map(|folders| format!("Connected, {} folders", folders.len()))
+    });
+    match tokio::time::timeout(std::time::Duration::from_secs(30), work).await {
+        Ok(done) => done.map_err(|e| e.to_string())?,
+        Err(_) => Err("The mail server did not answer".into()),
+    }
 }

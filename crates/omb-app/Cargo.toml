@@ -12,8 +12,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 omb-core.workspace = true
 omb-drivers = { path = "../omb-drivers" }
+omb-email = { path = "../omb-email" }
 omb-mcp = { path = "../omb-mcp" }
 omb-ssh = { path = "../omb-ssh" }
 omb-wire.workspace = true
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 serde_json.workspace = true

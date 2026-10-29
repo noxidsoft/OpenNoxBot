@@ -26,7 +26,7 @@ fn main() {
             let control = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
             let owner = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&data)?);
             let ssh = Arc::new(omb_ssh::SshRunner::new(data.join("known_hosts"), control.join(format!("nox-ssh-{owner}"))));
-            let services = omb_mcp::Services { approvals: approvals.clone(), store: store.clone(), ssh: ssh.clone() };
+            let services = omb_mcp::Services { approvals: approvals.clone(), store: store.clone(), ssh: ssh.clone(), mailbox: commands::mailbox_opener(store.clone()) };
             let mcp = Arc::new(tauri::async_runtime::block_on(omb_mcp::McpServer::start(services))?);
             app.manage(AppState { store, data, running: Mutex::new(HashSet::new()), approvals, mcp, ssh, scanned: Mutex::new(Default::default()) });
             Ok(())
@@ -53,6 +53,10 @@ fn main() {
             commands::trust_host,
             commands::test_host,
             commands::ssh_activity,
+            commands::email_status,
+            commands::save_email,
+            commands::remove_email,
+            commands::test_email,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenNoxBot");

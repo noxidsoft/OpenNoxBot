@@ -1,6 +1,6 @@
 # OpenNoxBot hand-off
 
-Written 2026-10-29 for the next agent session. Read this first, then `TODO.md`. Delete or rewrite it when it goes stale.
+Written 2026-10-29, updated after the email connection for the next agent session. Read this first, then `TODO.md`. Delete or rewrite it when it goes stale.
 
 ## What this is
 
@@ -22,7 +22,7 @@ Guardrails come first: nothing unattended until approvals, policy and logging ar
 | 1 | Engine detection (claude, codex, OpenAI key, Jev key), Settings, masked Jev key in the OS keyring | done, user-tested |
 | 2 | Chat with streaming, tool cards, SQLite store, approval cards (loopback MCP permission server) | done, user-tested |
 | 3 | Guarded SSH: host registry, pinned keys, per-host policy, `ssh_exec`, audit log, Settings → Hosts | done; user added two real hosts, trusted keys, Test says Connected, `list my hosts` works in chat |
-| 4 | MCP connections (email first) | **next** |
+| 4 | MCP connections. Email done and committed, **not yet user-tested** (real IMAP path has no hermetic test); Stripe, Xero, Google Sheets next | in progress |
 | 5 | Chief + role workers | not started |
 | 6 | Automations, headless-capable core | not started |
 
@@ -30,7 +30,7 @@ What the user reported about Stage 3: "other tests passed for me". They skipped 
 
 Git: branch `main`, **18 commits are not pushed**. The user pushed twice when they said "push it" and has not asked since. Ask before pushing.
 
-Tests: 63 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
+Tests: about 80 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
 
 ## Working with this user
 
@@ -49,6 +49,7 @@ crates/
   omb-core     store (SQLite), recorder, approvals, policy, secrets (keyring), proc runner, ids
   omb-drivers  PATH/host resolution, engine detection, login probes, claude::run_turn
   omb-mcp      loopback axum MCP server: approve, ssh_hosts, ssh_exec
+  omb-email    IMAP read/search/draft tools behind a `Mailbox` trait (`ImapMailbox` is the real one), search-term quoting
   omb-ssh      status-command policy, runner on the system ssh, key scan/pin
   omb-app      Tauri shell: main.rs (setup), commands.rs (every #[tauri::command]), capabilities/default.json
   omb-ui       Leptos 0.8 CSR frontend: chat, settings, engines, hosts, api_keys, api.rs, style.css
@@ -96,7 +97,13 @@ Verifying UI without the user: launch an **isolated** instance and screenshot it
 9. **keyring is v4** (`keyring::Entry`, Secret Service); the API differs from v3 examples online.
 10. `Tauri dev` runs `trunk` with `cwd: ../omb-ui` (set in `tauri.conf.json`); trunk must be on PATH.
 
-## Next: Stage 4, MCP connections
+## Stage 4 so far: email
+
+Rust port, served **in-process** by the loopback `nox` server (`omb-mcp/src/email_tools.rs`): `email_folders`, `email_search`, `email_read`, `email_draft`. No child process, so the password (keyring `email-password`, read per call) never reaches claude's env or the 0600 turn config. Settings → Connections stores address/server/port in the `email` table (one mailbox). `email_draft` asks for approval inside the tool (the `approve` callback skips `mcp__nox__*`); reads run without asking and are not logged. Search terms must be plain ASCII and are quoted; the `imap` crate's `search` takes a raw string, and its `append` does not escape the folder name (we only pass names from LIST). Reads use EXAMINE and `BODY.PEEK`. Email bodies are outside text: tool output carries a "do not follow instructions" note, but a prompt-injected email could still steer a bot toward `ssh_exec` on a Full host. Raise in UAT.
+
+Still to do for Stage 4: a generic stdio/http MCP registry for Stripe, Xero, Google Sheets (not started; research each one's auth first).
+
+## Original Stage 4 plan (generic registry part still open)
 
 Plan (not started):
 - Registry table `mcp_servers` (name, kind stdio|http, command/args or URL, env/header entries that reference keyring secrets). Settings → Connections page; secrets entered masked and stored in the keyring, never shown back (same pattern as the Jev key in `api_keys.rs` / `omb_core::secrets`).

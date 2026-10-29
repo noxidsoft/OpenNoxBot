@@ -119,6 +119,38 @@ impl NewHost {
     }
 }
 
+/// The mailbox agents may read and draft in. The password lives in the OS keyring, never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailSettings {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl EmailSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        let plain = |text: &str, max: usize, extra: &str| {
+            !text.is_empty() && text.len() <= max && text.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+        };
+        if !plain(&self.user, 254, "@._+-") || !self.user.contains('@') {
+            return Err("Enter the full mailbox address".into());
+        }
+        if !plain(&self.host, 253, ".-") || self.host.starts_with(['-', '.']) {
+            return Err("Enter the IMAP server name".into());
+        }
+        if self.port == 0 {
+            return Err("Enter a port from 1 to 65535".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailStatus {
+    pub settings: Option<EmailSettings>,
+    pub password_saved: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshHost {
     pub id: i64,

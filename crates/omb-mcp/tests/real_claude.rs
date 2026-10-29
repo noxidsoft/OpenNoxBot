@@ -23,7 +23,7 @@ async fn play_with(prompt: &str, decide: Decision, approval: ApprovalMode, store
     let host = Host::from_process();
     let bin = host.resolve("claude").expect("claude is installed");
     let approvals = Arc::new(Approvals::default());
-    let server = McpServer::start(Services { approvals: approvals.clone(), store, ssh }).await.unwrap();
+    let server = McpServer::start(Services { approvals: approvals.clone(), store, ssh, mailbox: Arc::new(|| Err("Email is not set up".into())) }).await.unwrap();
     let folder = tempfile::tempdir().unwrap();
     let (tx, mut rx) = unbounded_channel();
     let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx.clone() });

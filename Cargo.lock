@@ -3247,6 +3247,7 @@ version = "0.0.1"
 dependencies = [
  "omb-core",
  "omb-drivers",
+ "omb-email",
  "omb-mcp",
  "omb-ssh",
  "omb-wire",
@@ -3299,6 +3300,7 @@ dependencies = [
  "axum",
  "omb-core",
  "omb-drivers",
+ "omb-email",
  "omb-ssh",
  "omb-wire",
  "serde_json",

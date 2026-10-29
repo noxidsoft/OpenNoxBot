@@ -1,4 +1,4 @@
-use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EngineId, HostPolicy, MessageRole, NewHost, SshHost, SshLogEntry, SshOutcome, ToolCall};
+use omb_wire::{ApprovalMode, ApprovalRequest, ApprovalState, Bot, ChatMessage, EmailSettings, EngineId, HostPolicy, MessageRole, NewHost, SshHost, SshLogEntry, SshOutcome, ToolCall};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -83,6 +83,12 @@ impl Store {
                  user TEXT,
                  port INTEGER,
                  policy TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS email (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 user TEXT NOT NULL,
+                 host TEXT NOT NULL,
+                 port INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS ssh_log (
                  id INTEGER PRIMARY KEY,
@@ -234,6 +240,25 @@ impl Store {
         self.conn().execute("UPDATE hosts SET policy = ?2 WHERE id = ?1", params![id, text_of(policy)]).map(|_| ()).map_err(failed)
     }
 
+    pub fn email(&self) -> Result<Option<EmailSettings>, String> {
+        self.conn()
+            .query_row("SELECT user, host, port FROM email WHERE id = 1", [], |row| Ok(EmailSettings { user: row.get(0)?, host: row.get(1)?, port: row.get(2)? }))
+            .optional()
+            .map_err(failed)
+    }
+
+    pub fn set_email(&self, settings: &EmailSettings) -> Result<(), String> {
+        settings.validate()?;
+        self.conn()
+            .execute("INSERT OR REPLACE INTO email (id, user, host, port) VALUES (1, ?1, ?2, ?3)", params![settings.user, settings.host, settings.port])
+            .map(|_| ())
+            .map_err(failed)
+    }
+
+    pub fn clear_email(&self) -> Result<(), String> {
+        self.conn().execute("DELETE FROM email", []).map(|_| ()).map_err(failed)
+    }
+
     pub fn log_ssh(&self, bot_id: Option<i64>, host: &str, command: &str, outcome: SshOutcome, exit_code: Option<i32>, millis: Option<i64>) -> Result<(), String> {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
         self.conn()
@@ -318,6 +343,21 @@ mod tests {
         store.expire_unfinished(None, Some("The app closed before this turn finished")).unwrap();
         assert_eq!(of(&b).last().map(|m| (m.role, m.body.as_str())), Some((MessageRole::Error, "The app closed before this turn finished")));
         assert_eq!(of(&a).len(), 3, "a was already closed out, so it gets no note");
+    }
+
+    #[test]
+    fn the_mailbox_settings_are_validated_replaced_and_cleared() {
+        let store = Store::in_memory().unwrap();
+        assert_eq!(store.email().unwrap(), None);
+        let settings = |user: &str, host: &str, port| EmailSettings { user: user.into(), host: host.into(), port };
+        store.set_email(&settings("me@example.com", "imap.titan.email", 993)).unwrap();
+        store.set_email(&settings("you@example.com", "imap.example.com", 143)).unwrap();
+        assert_eq!(store.email().unwrap(), Some(settings("you@example.com", "imap.example.com", 143)));
+        for bad in [settings("nobody", "h.com", 993), settings("a@b.com", "-h", 993), settings("a@b.com", "h h", 993), settings("a@b.com", "h.com", 0)] {
+            assert!(store.set_email(&bad).is_err());
+        }
+        store.clear_email().unwrap();
+        assert_eq!(store.email().unwrap(), None);
     }
 
     #[test]
