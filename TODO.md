@@ -21,6 +21,7 @@
 - Trust keys for hosts behind ProxyJump
 
 ## Later
+- Inbox bot (user's stated goal): unattended, email tools only (no ssh/shell/web); per-bot "save drafts without asking" (never send, no send tool exists); scheduled triage that sorts mail and posts a daily digest of what needs their attention; label/move tools get their own approval setting, delete always asks
 - Sandbox: block raw `ssh`/`scp` and network egress for bot shells (bubblewrap + seccomp)
 - Run headless on a server, desktop as a client
 - Cost tracking per bot and per run
