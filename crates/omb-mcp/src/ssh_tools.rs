@@ -86,7 +86,7 @@ pub async fn exec(shared: &Shared, turn: &TurnContext, args: &Value) -> Reply {
             return error(why);
         }
         Gate::Ask => true,
-        Gate::Run => false,
+        Gate::Run => turn.mail_seen.load(std::sync::atomic::Ordering::SeqCst),
     };
     if !shared.ssh.is_trusted(&host).await {
         log(SshOutcome::Failed, None, None);

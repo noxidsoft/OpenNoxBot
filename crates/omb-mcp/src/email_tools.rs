@@ -20,6 +20,9 @@ pub async fn run(shared: &Shared, turn: &TurnContext, name: &str, args: &Value) 
     if !definitions().iter().any(|tool| tool["name"] == name) {
         return failure("unknown tool");
     }
+    if name != "email_draft" {
+        turn.mail_seen.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     let draft = if name == "email_draft" {
         match omb_email::parse_draft(args) {
             Ok(draft) => Some(draft),

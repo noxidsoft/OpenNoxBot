@@ -26,7 +26,7 @@ async fn play_with(prompt: &str, decide: Decision, approval: ApprovalMode, store
     let server = McpServer::start(Services { approvals: approvals.clone(), store, ssh, mailbox: Arc::new(|| Err("Email is not set up".into())) }).await.unwrap();
     let folder = tempfile::tempdir().unwrap();
     let (tx, mut rx) = unbounded_channel();
-    let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx.clone() });
+    let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx.clone(), mail_seen: Default::default() });
     let config = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(config.path(), access.config().to_string()).unwrap();
 

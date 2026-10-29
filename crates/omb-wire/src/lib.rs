@@ -10,6 +10,14 @@ pub enum ApprovalMode {
     Custom,
 }
 
+impl ApprovalMode {
+    /// Once a mailbox is connected, mail can reach any turn and the CLI skips its permission callback in the looser
+    /// modes, so every turn asks.
+    pub fn with_mail(self) -> Self {
+        ApprovalMode::Ask
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineId {
@@ -243,6 +251,13 @@ mod tests {
         assert!(ApprovalMode::Edits < ApprovalMode::Auto);
         assert!(ApprovalMode::Auto < ApprovalMode::Full);
         assert_eq!(serde_json::to_string(&ApprovalMode::Edits).unwrap(), "\"edits\"");
+    }
+
+    #[test]
+    fn a_connected_mailbox_puts_every_turn_in_ask_mode() {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Edits, ApprovalMode::Auto, ApprovalMode::Full, ApprovalMode::Custom] {
+            assert_eq!(mode.with_mail(), ApprovalMode::Ask);
+        }
     }
 
     #[test]

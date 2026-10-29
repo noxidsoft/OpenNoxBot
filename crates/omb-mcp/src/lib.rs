@@ -30,6 +30,8 @@ pub struct TurnContext {
     pub bot_id: i64,
     pub folder: PathBuf,
     pub events: UnboundedSender<RuntimeEvent>,
+    /// Set once the turn has read mail. From then on anything that could send something out asks first.
+    pub mail_seen: std::sync::atomic::AtomicBool,
 }
 
 /// Opens the person's mailbox, with the address drafts are written from. Fails when email is not set up.
@@ -278,7 +280,7 @@ mod tests {
         let server = McpServer::start(Services { approvals: approvals.clone(), store: store.clone(), ssh: Arc::new(ssh), mailbox }).await.unwrap();
         let (tx, events) = unbounded_channel();
         let folder = tempfile::tempdir().unwrap();
-        let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx });
+        let access = server.register(TurnContext { bot_id: 1, folder: folder.path().to_path_buf(), events: tx, mail_seen: Default::default() });
         Fixture { server, access, approvals, store, events, folder, mail, _ssh: ssh_dir }
     }
 
@@ -453,6 +455,24 @@ mod tests {
         assert!(refused["result"]["isError"] == true, "{refused}");
         assert_eq!(f.mail.searches.lock().unwrap().len(), 1);
         assert!(f.events.try_recv().is_err(), "reading mail never asks");
+    }
+
+    #[tokio::test]
+    async fn after_mail_is_read_even_a_status_command_on_a_full_host_waits_for_the_person() {
+        let mut f = fixture().await;
+        assert!(exec(&f, "full", "uptime").await.0.contains("ran:"));
+        assert!(f.events.try_recv().is_err(), "before mail, a full host never asks");
+        post(&f, None, tool(1, "email_search", json!({}))).await;
+        let router = router(f.server.shared.clone());
+        let request = Request::post("/mcp")
+            .header("authorization", format!("Bearer {}", f.access.token))
+            .body(Body::from(tool(2, "ssh_exec", json!({"host": "full", "command": "uptime"})).to_string()))
+            .unwrap();
+        let waiting = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        let Some(RuntimeEvent::RequestOpened { request_id, .. }) = f.events.recv().await else { panic!("nobody was asked") };
+        assert!(f.approvals.answer(&request_id, Decision::Deny));
+        let bytes = axum::body::to_bytes(waiting.await.unwrap().into_body(), usize::MAX).await.unwrap();
+        assert!(serde_json::from_slice::<Value>(&bytes).unwrap()["result"]["isError"] == true);
     }
 
     #[tokio::test]

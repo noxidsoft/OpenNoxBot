@@ -140,7 +140,7 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: 
     let resume = store.session(bot.id).ok().flatten();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let access = mcp.register(TurnContext { bot_id: bot.id, folder: cwd.clone(), events: tx.clone() });
+    let access = mcp.register(TurnContext { bot_id: bot.id, folder: cwd.clone(), events: tx.clone(), mail_seen: Default::default() });
     let config = match write_turn_config(data, &access.config()) {
         Ok(path) => path,
         Err(error) => {
@@ -149,7 +149,8 @@ async fn play_turn(app: &AppHandle, store: &Store, data: &std::path::Path, mcp: 
             return emit(event);
         }
     };
-    let (model, approval, prompt, config_path) = (bot.model.clone(), bot.approval, text.to_owned(), config.clone());
+    let approval = if store.email().ok().flatten().is_some() { bot.approval.with_mail() } else { bot.approval };
+    let (model, prompt, config_path) = (bot.model.clone(), text.to_owned(), config.clone());
     let driver = tokio::spawn(async move {
         let _access = access;
         let mcp = McpAccess { config: &config_path, permission_tool: PERMISSION_TOOL, disallowed_tools: &DISALLOWED_TOOLS };
