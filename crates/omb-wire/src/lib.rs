@@ -36,6 +36,47 @@ pub struct EngineStatus {
     pub account: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    Tool,
+    Error,
+}
+
+/// The body of a `MessageRole::Tool` message, as JSON.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub name: String,
+    pub input: serde_json::Value,
+    pub ok: Option<bool>,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bot {
+    pub id: i64,
+    pub name: String,
+    pub engine: EngineId,
+    pub model: Option<String>,
+    pub approval: ApprovalMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub bot_id: i64,
+    pub role: MessageRole,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BotEvent {
+    pub bot_id: i64,
+    pub event: RuntimeEvent,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RuntimeEvent {

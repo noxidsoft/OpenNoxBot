@@ -8,3 +8,6 @@ repository.workspace = true
 [dependencies]
 omb-wire.workspace = true
 keyring = "4"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
