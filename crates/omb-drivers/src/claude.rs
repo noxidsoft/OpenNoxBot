@@ -1,5 +1,5 @@
 use crate::host::Host;
-use crate::run::spawn;
+use omb_core::proc::spawn;
 use omb_wire::{ApprovalMode, RuntimeEvent};
 use serde_json::{Value, json};
 use std::path::Path;

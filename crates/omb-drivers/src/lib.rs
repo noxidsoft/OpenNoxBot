@@ -2,7 +2,6 @@ mod claude;
 mod detect;
 mod host;
 mod login;
-mod run;
 #[cfg(test)]
 mod testing;
 

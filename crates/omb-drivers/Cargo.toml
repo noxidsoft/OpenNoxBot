@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+omb-core.workspace = true
 omb-wire.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["process", "time", "macros", "rt", "io-util", "sync"] }

@@ -12,8 +12,8 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 getrandom = "0.3"
-tokio = { version = "1.54.1", features = ["sync"] }
+tokio = { version = "1.54.1", features = ["sync", "process", "time", "io-util", "macros"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt", "macros"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }

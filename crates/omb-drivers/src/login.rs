@@ -1,5 +1,5 @@
 use crate::host::Host;
-use crate::run::{Finished, RunError, run};
+use omb_core::proc::{Finished, RunError, run};
 use omb_wire::AuthState;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
