@@ -36,6 +36,23 @@ pub struct EngineStatus {
     pub account: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RuntimeEvent {
+    #[serde(rename = "turn.started")]
+    TurnStarted { session_id: String, model: Option<String> },
+    #[serde(rename = "content.delta")]
+    ContentDelta { text: String },
+    #[serde(rename = "item.started")]
+    ItemStarted { id: String, name: String, input: serde_json::Value },
+    #[serde(rename = "item.completed")]
+    ItemCompleted { id: String, ok: bool, output: String },
+    #[serde(rename = "turn.completed")]
+    TurnCompleted { is_error: bool, result: Option<String>, cost_usd: Option<f64> },
+    #[serde(rename = "runtime.error")]
+    RuntimeError { message: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +63,12 @@ mod tests {
         assert!(ApprovalMode::Edits < ApprovalMode::Auto);
         assert!(ApprovalMode::Auto < ApprovalMode::Full);
         assert_eq!(serde_json::to_string(&ApprovalMode::Edits).unwrap(), "\"edits\"");
+    }
+
+    #[test]
+    fn runtime_events_are_tagged_by_dotted_type() {
+        let event = RuntimeEvent::ContentDelta { text: "hi".into() };
+        assert_eq!(serde_json::to_string(&event).unwrap(), r#"{"type":"content.delta","text":"hi"}"#);
+        assert_eq!(serde_json::from_str::<RuntimeEvent>(r#"{"type":"runtime.error","message":"x"}"#).unwrap(), RuntimeEvent::RuntimeError { message: "x".into() });
     }
 }
