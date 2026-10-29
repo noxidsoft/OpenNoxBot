@@ -28,7 +28,7 @@ Guardrails come first: nothing unattended until approvals, policy and logging ar
 
 What the user reported about Stage 3: "other tests passed for me". They skipped one "rename test" because those hosts are part of their real workflow. That test is not in my checklist, so it is probably the "make a change on a host" step (create a file, expect an approval card). Treat the change-with-approval path on a real host and the read-only/Refused path as **not confirmed by the user**. The Activity log was empty in their screenshot. It is covered by tests against a throwaway sshd and the real `claude`, not by them.
 
-Git: branch `main`, **18 commits are not pushed**. The user pushed twice when they said "push it" and has not asked since. Ask before pushing.
+Git: branch `main`, **21 commits are not pushed**. The user pushed twice when they said "push it" and has not asked since. Ask before pushing.
 
 Tests: about 80 hermetic (`cargo test`), plus 6 ignored ones that cost money or touch the keyring (below).
 
@@ -48,11 +48,11 @@ crates/
   omb-wire     serde types shared by backend and UI (WASM-safe)
   omb-core     store (SQLite), recorder, approvals, policy, secrets (keyring), proc runner, ids
   omb-drivers  PATH/host resolution, engine detection, login probes, claude::run_turn
-  omb-mcp      loopback axum MCP server: approve, ssh_hosts, ssh_exec
+  omb-mcp      loopback axum MCP server: approve, ssh_hosts, ssh_exec, email_*
   omb-email    IMAP read/search/draft tools behind a `Mailbox` trait (`ImapMailbox` is the real one), search-term quoting
   omb-ssh      status-command policy, runner on the system ssh, key scan/pin
   omb-app      Tauri shell: main.rs (setup), commands.rs (every #[tauri::command]), capabilities/default.json
-  omb-ui       Leptos 0.8 CSR frontend: chat, settings, engines, hosts, api_keys, api.rs, style.css
+  omb-ui       Leptos 0.8 CSR frontend: chat, settings, engines, hosts, connections, api_keys, api.rs, style.css
 ```
 
 A turn: `send_message` stores the user message, `play_turn` registers the turn with the MCP server (random bearer token), writes a 0600 config to `<data>/run/`, and spawns
@@ -108,7 +108,7 @@ Still to do for Stage 4: a generic stdio/http MCP registry for Stripe, Xero, Goo
 Plan (not started):
 - Registry table `mcp_servers` (name, kind stdio|http, command/args or URL, env/header entries that reference keyring secrets). Settings → Connections page; secrets entered masked and stored in the keyring, never shown back (same pattern as the Jev key in `api_keys.rs` / `omb_core::secrets`).
 - Merge enabled servers into each turn's `mcpServers` map next to `nox` (`omb_mcp::TurnAccess::config`), injecting secrets at spawn. Their tools arrive as `mcp__<name>__<tool>` and go through `approve`, so they ask by default. Consider per-server read/write classification and an "always allow" memory (see `TODO.md`).
-- **Email first.** Either register the user's existing `scripts/mcp-email.ts` as a stdio server (fastest; needs Node 24 with `--experimental-strip-types`) or port it to Rust (it is 322 lines: IMAP search/read plus draft-append, never sends; env `EMAIL_USER`, `EMAIL_PASSWORD`, optional `EMAIL_IMAP_HOST` default `imap.titan.email`, `EMAIL_IMAP_PORT` 993; docs in `~/Programs/OpenMausBot/docs/email-mcp.md`). Ask the user which.
+- Email is done (see above); the user chose the Rust port.
 - Then Stripe, Xero, Google Sheets. Do not assume how they authenticate: look up the current official or community MCP servers and their auth (Stripe has a remote MCP and a local one; Xero publishes an MCP server; Google Workspace options are mostly community) before building. OAuth PKCE reference: `~/Programs/OpenMausBot/server/mcp-oauth.ts`.
 
 Then Stage 5 (chief + workers: delegation tools on the MCP server, a task tree with status and limits on depth/concurrency/cost, a team map; see the original's `docs/runtime-contract.md`, `agents-tool-bridge.md`) and Stage 6 (automations: cron with timezones plus cheap code "checks" before any model turn, run history, pause/resume; see `docs/routine-schedules.md`, `proactive-routines.md`). Unattended runs need a headless-capable core, so keep logic out of the Tauri layer.

@@ -316,6 +316,15 @@ mod tests {
     }
 
     #[test]
+    fn an_html_only_message_reads_as_plain_text() {
+        let raw = b"From: b@example.com\r\nSubject: Receipt\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>p{color:red}</style></head><body><p>Total <b>$5</b></p><p>Thanks</p></body></html>".to_vec();
+        let mut mailbox = Fake { original: Some(raw), ..Fake::default() };
+        let body = call(&mut mailbox, "email_read", &json!({ "uid": 1 })).unwrap()["body"].as_str().unwrap().to_owned();
+        assert!(body.contains("Total") && body.contains("$5") && body.contains("Thanks"), "{body:?}");
+        assert!(!body.contains('<') && !body.contains("color"), "{body:?}");
+    }
+
+    #[test]
     fn reading_returns_the_body_and_marks_it_as_outside_content() {
         let raw = b"From: Bob <b@example.com>\r\nTo: me@example.com\r\nSubject: Q\r\n\r\nhello".to_vec();
         let mut mailbox = Fake { original: Some(raw), ..Fake::default() };
