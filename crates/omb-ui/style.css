@@ -1,0 +1,2 @@
+:root { color-scheme: light dark; }
+body { margin: 0; font: 15px system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; }

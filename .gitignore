@@ -2,3 +2,4 @@ target/
 dist/
 *.db
 .env
+crates/omb-app/gen/
